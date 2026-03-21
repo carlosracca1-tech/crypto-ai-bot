@@ -27,28 +27,113 @@ const TWEET_TYPES = {
 
 // ─── System prompt base ────────────────────────────────────────────────────────
 
-const BASE_SYSTEM_PROMPT = `You are an anonymous senior AI crypto analyst with deep expertise in decentralized AI infrastructure, tokenomics, and on-chain data analysis. You write concise, high-signal content for a sophisticated crypto audience.
+const BASE_SYSTEM_PROMPT = `You are a top crypto operator — sharp, experienced, slightly contrarian. You've been trading AI tokens since before the narrative exploded. You share real-time reads on the market in plain English. No jargon. No report language. Pure signal.
 
-VOICE AND STYLE:
-- Analytical, direct, and precise
-- English only
-- Zero emojis
-- No hashtags
-- No promotional language
-- No guaranteed predictions or financial advice
-- Use specific data points and numbers
-- Write like a quant analyst, not a marketer
-- Contrarian thinking is valued
-- Systems-level observations over surface-level commentary
+YOUR TWEET STRUCTURE (always follow this):
+1. HOOK — first line stops the scroll. One punchy observation or tension point.
+2. INSIGHT — one concrete data point or signal, explained in plain English. Not a number dump.
+3. TAKE — your interpretation. What does this mean? Who gets trapped? What's the non-obvious move?
 
-TWEET CONSTRAINTS:
-- Maximum 270 characters per tweet
-- One clear, specific insight per tweet
-- Open with the most important data point
-- No filler phrases ("in my opinion", "I think", "it seems")
-- No calls to action ("follow me", "RT", "check out")
-- No rhetorical questions as hooks
-- Avoid clichés: "mind-blowing", "game-changer", "revolutionary", "massive"`;
+FORMAT RULES:
+- 3 to 4 short lines max. Never a dense paragraph.
+- Each line should feel like a separate punch.
+- Use line breaks between hook, insight, and take.
+- English only. No emojis. No hashtags. No "follow for more".
+- No financial advice. No guaranteed calls.
+
+VOICE — sound like this:
+- "momentum is building but nobody's talking about it"
+- "price isn't breaking — that's the signal"
+- "this is where people get trapped"
+- "market is pricing in X but the data says Y"
+- "the narrative is loud. the price is quiet."
+- "everyone's watching the wrong thing"
+
+DO NOT sound like this (banned phrases):
+- "indicating bullish bias"
+- "technical score"
+- "composite score"
+- "RSI showing oversold conditions"
+- "narrative strength is moderate"
+- "the market phase is consolidation"
+- "bullish/bearish token ratio"
+- "it seems", "I think", "in my view"
+- Any phrase that sounds like a report summary
+
+TRANSLATE signals to human English:
+- RSI below 35 → "price has been beaten down hard"
+- RSI above 70 → "momentum is stretched — latecomers are still buying"
+- MACD bullish crossover → "momentum is flipping positive"
+- Price above all MAs → "structure is clean"
+- High volume + price up → "real buying pressure, not a fake move"
+- Narrative vs price divergence → "the story is loud but price isn't moving — something's off"
+
+GOAL: Make someone who doesn't know what RSI is understand the market situation instantly, while still giving real analysts something to think about.
+
+HARD LIMIT: The entire tweet must be under 278 characters total. Count carefully.`;
+
+// ─── Helpers de traducción de señales ─────────────────────────────────────────
+
+function interpretRSI(rsi) {
+  if (!rsi) return null;
+  if (rsi < 30) return `RSI at ${rsi.toFixed(0)} — sellers are exhausted, price has been beaten down hard`;
+  if (rsi < 40) return `RSI at ${rsi.toFixed(0)} — price is weak but not yet at capitulation`;
+  if (rsi < 55) return `RSI at ${rsi.toFixed(0)} — neutral, no clear momentum either way`;
+  if (rsi < 65) return `RSI at ${rsi.toFixed(0)} — momentum building, buyers in control`;
+  if (rsi < 75) return `RSI at ${rsi.toFixed(0)} — strong momentum but getting stretched`;
+  return `RSI at ${rsi.toFixed(0)} — momentum is overextended, latecomers are still buying`;
+}
+
+function interpretMACD(macd) {
+  if (!macd) return null;
+  const m = String(macd).toLowerCase();
+  if (m.includes('bullish') || m.includes('positive')) return 'momentum flipping positive';
+  if (m.includes('bearish') || m.includes('negative')) return 'momentum rolling over';
+  if (m.includes('neutral') || m.includes('flat')) return 'momentum flat — no conviction either way';
+  return `MACD: ${macd}`;
+}
+
+function interpretMATrend(trend) {
+  if (!trend) return null;
+  const t = String(trend).toLowerCase().replace(/_/g, ' ');
+  if (t.includes('strong bull') || t.includes('above all')) return 'price is above all key moving averages — structure is clean';
+  if (t.includes('bull')) return 'price is above key averages — uptrend intact';
+  if (t.includes('strong bear') || t.includes('below all')) return 'price is below all key moving averages — structure is broken';
+  if (t.includes('bear')) return 'price is below key averages — downtrend in play';
+  return 'moving averages are mixed — no clear trend yet';
+}
+
+function interpretVolume(volumeTrend) {
+  if (!volumeTrend) return null;
+  const v = String(volumeTrend).toLowerCase();
+  if (v.includes('spike') || v.includes('surge') || v.includes('high')) return 'volume spiking — real conviction behind the move';
+  if (v.includes('declin') || v.includes('low') || v.includes('weak')) return 'volume is fading — move lacks conviction';
+  if (v.includes('above avg') || v.includes('above average')) return 'volume above average — buyers are showing up';
+  return null;
+}
+
+function interpretBreakout(breakout) {
+  if (!breakout || !breakout.type) return null;
+  const type = String(breakout.type).toLowerCase().replace(/_/g, ' ');
+  const pct = breakout.pctAbove ? ` by ${breakout.pctAbove.toFixed(1)}%` : '';
+  if (type.includes('bull') || type.includes('up') || type.includes('above')) {
+    return `breaking out${pct} above a key level — this is where shorts get squeezed`;
+  }
+  if (type.includes('bear') || type.includes('down') || type.includes('below')) {
+    return `breaking down${pct} below support — this is where longs get trapped`;
+  }
+  return null;
+}
+
+function interpretMarketPhase(phase) {
+  const p = String(phase).toLowerCase().replace(/_/g, ' ');
+  if (p.includes('bull') || p.includes('up')) return 'sector is in full bull mode';
+  if (p.includes('bear') || p.includes('down')) return 'sector is in a downtrend';
+  if (p.includes('consolidat')) return 'sector is coiling — waiting for the next move';
+  if (p.includes('recovery')) return 'sector is recovering off lows';
+  if (p.includes('distribut')) return 'sector looks like it\'s being distributed';
+  return p;
+}
 
 // ─── Generadores por tipo ──────────────────────────────────────────────────────
 
@@ -58,21 +143,29 @@ TWEET CONSTRAINTS:
 async function generateMarketInsightTweet(fusionData) {
   const { macroSignals, tokens } = fusionData;
   const top = tokens[0];
+  const runner = macroSignals.topGainers?.[0];
+  const laggard = macroSignals.topLosers?.[0];
+  const totalTokens = (macroSignals.bullishTokenCount || 0) + (macroSignals.bearishTokenCount || 0);
+  const bullPct = totalTokens > 0 ? Math.round((macroSignals.bullishTokenCount / totalTokens) * 100) : 0;
 
-  const prompt = `Generate a market insight tweet about the AI crypto sector.
+  const prompt = `Write ONE market insight tweet about the AI crypto sector right now.
 
-MARKET DATA:
-- AI sector market phase: ${macroSignals.marketPhase.replace('_', ' ')}
-- Average 24h change across AI tokens: ${macroSignals.avgChange24h}%
-- Bullish/Bearish token ratio: ${macroSignals.bullishTokenCount}/${macroSignals.bearishTokenCount}
-- Dominant narrative: ${macroSignals.dominantNarrative}
-- Narrative strength: ${macroSignals.narrativeStrength}
-- Overall sentiment: ${macroSignals.overallSentiment}
-- Top performer 24h: ${macroSignals.topGainers?.[0]?.symbol} (${macroSignals.topGainers?.[0]?.change24h?.toFixed(1)}%)
-- Weakest 24h: ${macroSignals.topLosers?.[0]?.symbol} (${macroSignals.topLosers?.[0]?.change24h?.toFixed(1)}%)
-- Leading token composite score: ${top?.symbol} (${top?.compositeScore}/100)
+SITUATION:
+- Sector is ${interpretMarketPhase(macroSignals.marketPhase)}
+- ${bullPct}% of AI tokens are up in the last 24h (${macroSignals.bullishTokenCount} up, ${macroSignals.bearishTokenCount} down)
+- Average move across the sector: ${macroSignals.avgChange24h > 0 ? '+' : ''}${macroSignals.avgChange24h}% in 24h
+- Dominant narrative right now: "${macroSignals.dominantNarrative}"
+- Market mood: ${macroSignals.overallSentiment}
+- Biggest winner 24h: ${runner?.symbol || 'N/A'} (${runner?.change24h?.toFixed(1) || 'N/A'}%)
+- Biggest loser 24h: ${laggard?.symbol || 'N/A'} (${laggard?.change24h?.toFixed(1) || 'N/A'}%)
+- Leading AI token right now: ${top?.symbol || 'N/A'} at ${formatPrice(top?.currentPrice)}
 
-Generate ONE tweet maximum 270 characters. Focus on a non-obvious market observation. Return ONLY the tweet text, nothing else.`;
+TWEET STRUCTURE:
+Line 1 (Hook): Something sharp about what's actually happening in the sector — not a summary, a read.
+Line 2 (Insight): One specific data point from above, explained in plain English. What's the contrast or tension?
+Line 3 (Take): What does this mean? Who's right? Who gets trapped if this continues?
+
+Return ONLY the tweet text. Max 278 characters total. Use line breaks between sections.`;
 
   return callGPT(prompt, TWEET_TYPES.MARKET_INSIGHT);
 }
@@ -84,26 +177,38 @@ async function generateTechnicalTweet(fusionData) {
   const { tokens } = fusionData;
   const techInsight = fusionData.contentInsights?.technicalInsight;
 
-  // Seleccionar el token más interesante técnicamente
   const focusToken = tokens.find(t => t.symbol === techInsight?.focusToken) || tokens[0];
   if (!focusToken) return null;
 
-  const prompt = `Generate a technical analysis tweet for ${focusToken.symbol} (${focusToken.name}).
+  const rsiRead    = interpretRSI(focusToken.rsi);
+  const macdRead   = interpretMACD(focusToken.macd);
+  const maRead     = interpretMATrend(focusToken.maTrend);
+  const volRead    = interpretVolume(focusToken.volumeTrend?.label);
+  const brkRead    = interpretBreakout(focusToken.breakout);
 
-TECHNICAL DATA:
-- Current price: ${formatPrice(focusToken.currentPrice)}
-- 24h change: ${formatPct(focusToken.change24h || 0)}
-- RSI(14): ${focusToken.rsi?.toFixed(1) || 'N/A'}
-- MACD: ${focusToken.macd || 'N/A'}
-- MA trend: ${focusToken.maTrend?.replace(/_/g, ' ')}
-- Technical bias: ${focusToken.technicalBias}
-- Technical score: ${focusToken.technicalScore}/100
-- Breakout signal: ${focusToken.breakout?.type?.replace(/_/g, ' ') || 'none'}
-${focusToken.breakout?.pctAbove ? `- Breakout level exceeded by: ${focusToken.breakout.pctAbove.toFixed(2)}%` : ''}
-- Volume trend: ${fusionData.tokens.find(t => t.symbol === focusToken.symbol)?.volumeTrend?.label || 'N/A'}
-- Key signals: ${focusToken.topSignals?.join('; ') || 'none'}
+  // Build signal summary in plain English
+  const signals = [rsiRead, macdRead, maRead, volRead, brkRead].filter(Boolean);
+  const signalSummary = signals.slice(0, 3).join(' | ');
 
-Generate ONE tweet maximum 270 characters with specific technical data points. Return ONLY the tweet text.`;
+  const direction = focusToken.technicalBias?.toLowerCase();
+  const biasPlain = direction?.includes('bull') ? 'setup leans bullish'
+    : direction?.includes('bear') ? 'setup leans bearish'
+    : 'setup is mixed — no clear edge';
+
+  const prompt = `Write ONE technical analysis tweet about ${focusToken.symbol} (${focusToken.name}).
+
+PRICE ACTION:
+- Price: ${formatPrice(focusToken.currentPrice)} — ${focusToken.change24h >= 0 ? 'up' : 'down'} ${Math.abs(focusToken.change24h || 0).toFixed(1)}% in 24h
+- Overall setup: ${biasPlain}
+- Key signals: ${signalSummary || 'signals are mixed'}
+${brkRead ? `- Structure note: ${brkRead}` : ''}
+
+TWEET STRUCTURE:
+Line 1 (Hook): One punchy observation about ${focusToken.symbol}'s price action or structure. Make someone stop scrolling.
+Line 2 (Insight): Explain what the key signal is in plain English. No jargon. What's the market actually doing?
+Line 3 (Take): What does this mean for people watching this token? Is this a trap or an opportunity?
+
+Return ONLY the tweet text. Max 278 characters total. Use line breaks between sections. Do NOT use words like "technical score", "composite score", "RSI showing", "indicating bullish bias".`;
 
   return callGPT(prompt, TWEET_TYPES.TECHNICAL_ANALYSIS);
 }
@@ -114,19 +219,29 @@ Generate ONE tweet maximum 270 characters with specific technical data points. R
 async function generateNarrativeTweet(fusionData) {
   const { narrativeSummary, aiNarrativeAnalysis, macroSignals } = fusionData;
 
-  const prompt = `Generate a narrative insight tweet about AI crypto discourse trends.
+  const topTokens   = narrativeSummary?.mostMentionedTokens?.slice(0, 3).join(', ') || 'N/A';
+  const emerging    = narrativeSummary?.emergingTerms?.slice(0, 4).join(', ')        || 'N/A';
+  const aiRead      = aiNarrativeAnalysis?.overallNarrativeAssessment               || '';
+  const keyInsight  = aiNarrativeAnalysis?.keyInsights?.[0]                         || '';
+  const alertTopic  = aiNarrativeAnalysis?.emergingNarrativeAlert?.topic;
+  const alertConf   = aiNarrativeAnalysis?.emergingNarrativeAlert?.confidence;
 
-NARRATIVE DATA:
-- Dominant narrative: ${macroSignals.dominantNarrative}
-- Narrative strength: ${macroSignals.narrativeStrength}
-- Sentiment: ${macroSignals.overallSentiment}
-- Most discussed tokens: ${narrativeSummary?.mostMentionedTokens?.join(', ')}
-- Emerging terms in last 12h: ${narrativeSummary?.emergingTerms?.join(', ')}
-- AI analysis: ${aiNarrativeAnalysis?.overallNarrativeAssessment || ''}
-- Key insight: ${aiNarrativeAnalysis?.keyInsights?.[0] || ''}
-- Emerging narrative alert: ${aiNarrativeAnalysis?.emergingNarrativeAlert?.topic || 'none'} (${aiNarrativeAnalysis?.emergingNarrativeAlert?.confidence || ''})
+  const prompt = `Write ONE narrative insight tweet about what crypto Twitter is really talking about right now in AI tokens.
 
-Generate ONE tweet maximum 270 characters about what the market narrative data signals. Return ONLY the tweet text.`;
+WHAT'S HAPPENING ON CT:
+- Most discussed right now: ${topTokens}
+- Terms gaining traction in last 12h: ${emerging}
+- Dominant narrative: "${macroSignals.dominantNarrative}" — sentiment is ${macroSignals.overallSentiment}
+- Analyst read: ${aiRead}
+- Key signal from the discourse: ${keyInsight}
+${alertTopic ? `- Something new is emerging: "${alertTopic}" (confidence: ${alertConf})` : ''}
+
+TWEET STRUCTURE:
+Line 1 (Hook): What's the tension between what people are saying and what's actually happening? Lead with that.
+Line 2 (Insight): What is the crowd focused on? Is the narrative ahead of the price or lagging behind it?
+Line 3 (Take): What does this narrative shift mean? Who's early? Who's late?
+
+Return ONLY the tweet text. Max 278 characters total. Use line breaks between sections. Sound like an insider reading the room, not a report.`;
 
   return callGPT(prompt, TWEET_TYPES.NARRATIVE_INSIGHT);
 }
@@ -136,35 +251,42 @@ Generate ONE tweet maximum 270 characters about what the market narrative data s
  */
 async function generateContrarianTweet(fusionData) {
   const { contentInsights, tokens, macroSignals } = fusionData;
-  const insight = contentInsights?.contrarianInsight;
-
+  const insight    = contentInsights?.contrarianInsight;
   const divergences = fusionData.topDivergences || [];
   const focusToken = insight?.focusToken
     ? tokens.find(t => t.symbol === insight.focusToken)
     : null;
 
-  const prompt = `Generate a contrarian take tweet about AI crypto markets.
+  // Build divergence context in plain English
+  const divSummary = divergences
+    .slice(0, 2)
+    .map(d => d.divergence?.description || '')
+    .filter(Boolean)
+    .join(' / ');
 
-CONTRARIAN ANGLE:
-${insight?.headline || ''}
+  const tokenContext = focusToken
+    ? `${focusToken.symbol} is ${focusToken.change24h >= 0 ? 'up' : 'down'} ${Math.abs(focusToken.change24h || 0).toFixed(1)}% while the narrative says ${macroSignals.overallSentiment}`
+    : '';
 
-DATA POINTS:
-${insight?.dataPoints?.join('\n') || ''}
+  const prompt = `Write ONE contrarian tweet about AI crypto markets. Push back on the consensus view.
 
-DIVERGENCES:
-${divergences.map(d => d.divergence?.description || '').join('\n') || 'none'}
+WHAT THE CROWD THINKS:
+- Dominant view: "${macroSignals.dominantNarrative}" narrative is ${macroSignals.narrativeStrength}
+- Crowd sentiment: ${macroSignals.overallSentiment}
+- Market phase: ${interpretMarketPhase(macroSignals.marketPhase)}
 
-MARKET CONTEXT:
-- Market phase: ${macroSignals.marketPhase}
-- Narrative strength: ${macroSignals.narrativeStrength}
-${focusToken ? `
-FOCUS TOKEN (${focusToken.symbol}):
-- Price change 24h: ${formatPct(focusToken.change24h || 0)}
-- Technical score: ${focusToken.technicalScore}/100
-- Narrative score: ${focusToken.narrativeScore}/100
-- Alignment: ${focusToken.alignment?.label}` : ''}
+WHAT THE DATA ACTUALLY SHOWS:
+${insight?.headline ? `- Contrarian signal: ${insight.headline}` : ''}
+${insight?.dataPoints?.slice(0, 3).join('\n') || ''}
+${divSummary ? `- Divergence: ${divSummary}` : ''}
+${tokenContext ? `- Price reality: ${tokenContext}` : ''}
 
-Generate ONE contrarian tweet maximum 270 characters. Challenge a mainstream view with data. Return ONLY the tweet text.`;
+TWEET STRUCTURE:
+Line 1 (Hook): State what everyone believes — then immediately challenge it. Create tension.
+Line 2 (Insight): What does the data actually show that contradicts the consensus? Be specific.
+Line 3 (Take): What's the non-obvious read here? Who's going to be wrong?
+
+Return ONLY the tweet text. Max 278 characters total. Use line breaks. Be sharp and confident. Don't hedge.`;
 
   return callGPT(prompt, TWEET_TYPES.CONTRARIAN);
 }
@@ -173,18 +295,27 @@ Generate ONE contrarian tweet maximum 270 characters. Challenge a mainstream vie
  * Genera tweet de pensamiento sistémico
  */
 async function generateSystemTweet(fusionData) {
-  const { contentInsights, macroSignals, narrativeSummary } = fusionData;
+  const { contentInsights, macroSignals, narrativeSummary, aiNarrativeAnalysis } = fusionData;
 
-  const prompt = `Generate a systems-level thinking tweet about decentralized AI infrastructure.
+  const emerging  = narrativeSummary?.emergingTerms?.slice(0, 3).join(', ') || '';
+  const aiRead    = aiNarrativeAnalysis?.overallNarrativeAssessment || '';
+  const dataPoints = contentInsights?.systemInsight?.dataPoints?.slice(0, 2).join(' / ') || '';
 
-SYSTEM DATA:
-- Market phase: ${macroSignals.marketPhase}
-- Dominant infrastructure narrative: ${macroSignals.dominantNarrative}
-- Narrative sentiment: ${macroSignals.overallSentiment}
-- Leading insights: ${contentInsights?.systemInsight?.dataPoints?.join('; ') || ''}
-- AI analysis: ${fusionData.aiNarrativeAnalysis?.overallNarrativeAssessment || ''}
+  const prompt = `Write ONE systems-level tweet about the bigger picture in decentralized AI infrastructure.
 
-Generate ONE tweet maximum 270 characters with a structural observation about decentralized AI. Return ONLY the tweet text.`;
+MACRO CONTEXT:
+- Sector structure: ${interpretMarketPhase(macroSignals.marketPhase)}
+- The narrative dominating: "${macroSignals.dominantNarrative}"
+- What's emerging on the edges: ${emerging || 'nothing notable yet'}
+- Bigger picture read: ${aiRead}
+${dataPoints ? `- Structural signals: ${dataPoints}` : ''}
+
+TWEET STRUCTURE:
+Line 1 (Hook): Zoom out. What's the structural thing happening that most people are missing? Make it feel important.
+Line 2 (Insight): What's the underlying dynamic — not the price, the structure. What's being built or broken?
+Line 3 (Take): Why does this matter 6 months from now? What's the implication most people aren't seeing?
+
+Return ONLY the tweet text. Max 278 characters total. Use line breaks. Sound like someone who's been watching this space for years, not someone reacting to today's candle.`;
 
   return callGPT(prompt, TWEET_TYPES.SYSTEM_THINKING);
 }
@@ -200,39 +331,48 @@ async function generateThread(fusionData) {
   const { tokens, macroSignals, narrativeSummary, aiNarrativeAnalysis } = fusionData;
   const topTokens = tokens.slice(0, 5);
   const date = todayISO();
+  const bullPct = Math.round(
+    ((macroSignals.bullishTokenCount || 0) /
+      Math.max(1, (macroSignals.bullishTokenCount || 0) + (macroSignals.bearishTokenCount || 0))) * 100
+  );
 
-  const prompt = `Generate a Twitter thread analyzing the AI crypto sector for ${date}.
+  const prompt = `Write a Twitter thread analyzing the AI crypto sector for ${date}. Sound like a top crypto operator sharing a real-time market read — not a report.
 
-FULL MARKET DATA:
-Market Phase: ${macroSignals.marketPhase.replace('_', ' ')}
-AI Sector avg 24h: ${macroSignals.avgChange24h}%
-Bullish/Bearish: ${macroSignals.bullishTokenCount}/${macroSignals.bearishTokenCount} tokens
-Dominant narrative: ${macroSignals.dominantNarrative} (${macroSignals.narrativeStrength})
-Sentiment: ${macroSignals.overallSentiment}
+MARKET SITUATION:
+Sector: ${interpretMarketPhase(macroSignals.marketPhase)}
+${bullPct}% of AI tokens are up in the last 24h
+Average move: ${macroSignals.avgChange24h > 0 ? '+' : ''}${macroSignals.avgChange24h}% across the sector
+Dominant narrative: "${macroSignals.dominantNarrative}"
+Mood: ${macroSignals.overallSentiment}
 
-TOP AI TOKENS:
-${topTokens.map(t => `- ${t.symbol}: ${formatPrice(t.currentPrice)}, ${formatPct(t.change24h || 0)}, RSI ${t.rsi?.toFixed(1)}, bias: ${t.technicalBias}, composite: ${t.compositeScore}/100`).join('\n')}
+TOP AI TOKENS (plain English):
+${topTokens.map(t => {
+  const rsi = interpretRSI(t.rsi);
+  const dir = t.change24h >= 0 ? 'up' : 'down';
+  return `- ${t.symbol}: ${formatPrice(t.currentPrice)}, ${dir} ${Math.abs(t.change24h || 0).toFixed(1)}% | ${rsi || ''} | setup: ${t.technicalBias || 'mixed'}`;
+}).join('\n')}
 
-NARRATIVE ANALYSIS:
+NARRATIVE:
 Most discussed: ${narrativeSummary?.mostMentionedTokens?.join(', ')}
-Emerging: ${narrativeSummary?.emergingTerms?.join(', ')}
-AI Summary: ${aiNarrativeAnalysis?.overallNarrativeAssessment}
-Key Insight: ${aiNarrativeAnalysis?.keyInsights?.[0]}
+Emerging terms: ${narrativeSummary?.emergingTerms?.join(', ')}
+Key insight: ${aiNarrativeAnalysis?.keyInsights?.[0] || ''}
 
-DIVERGENCES:
-${fusionData.topDivergences?.map(d => d.divergence?.description).filter(Boolean).join('\n') || 'none'}
+DIVERGENCES / CONTRARIAN:
+${fusionData.topDivergences?.map(d => d.divergence?.description).filter(Boolean).join('\n') || 'none notable'}
 
-Generate a Twitter thread as a JSON array of tweet objects. Each tweet max 270 characters. Format:
+Generate a Twitter thread as a JSON array. Each tweet max 270 characters. Hook → data → analysis → narrative → contrarian → synthesis. Each tweet is a standalone punch, not a report chapter.
+
+Format:
 [
-  {"tweet": "Opening tweet - hook with a key data point", "type": "hook"},
-  {"tweet": "Tweet 2 - market overview data", "type": "market"},
-  {"tweet": "Tweet 3 - top performing token technical analysis", "type": "technical"},
-  {"tweet": "Tweet 4 - narrative analysis observation", "type": "narrative"},
-  {"tweet": "Tweet 5 - divergence or contrarian insight", "type": "contrarian"},
-  {"tweet": "Tweet 6 - closing synthesis/structural insight", "type": "synthesis"}
+  {"tweet": "Hook tweet — the one line that makes someone stop scrolling and read the thread", "type": "hook"},
+  {"tweet": "Market overview — what's actually moving and what's not, in plain English", "type": "market"},
+  {"tweet": "Best technical setup in the sector right now — no jargon, just the read", "type": "technical"},
+  {"tweet": "What CT is saying vs what price is doing — the narrative tension", "type": "narrative"},
+  {"tweet": "The non-obvious read — what most people are getting wrong right now", "type": "contrarian"},
+  {"tweet": "The bigger picture — what this all means 3-6 months from now", "type": "synthesis"}
 ]
 
-Rules: No emojis, no hashtags, no promotional language, specific data, analytical tone.`;
+Rules: No emojis. No hashtags. No report language. Max 270 chars per tweet. Sound like a person, not a bot.`;
 
   const response = await withRetry(
     async () => {
@@ -244,7 +384,7 @@ Rules: No emojis, no hashtags, no promotional language, specific data, analytica
           { role: 'user', content: prompt },
         ],
         response_format: { type: 'json_object' },
-        temperature: 0.5,
+        temperature: 0.65,
         max_tokens: 2000,
       });
       const content = JSON.parse(completion.choices[0].message.content);
@@ -312,14 +452,14 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
 
   // ─── Modo normal: genera todos los tweets del día ────────────────────────────
   const tweetTypes = [
-    { type: TWEET_TYPES.MARKET_INSIGHT, generator: generateMarketInsightTweet },
+    { type: TWEET_TYPES.MARKET_INSIGHT,    generator: generateMarketInsightTweet },
     { type: TWEET_TYPES.TECHNICAL_ANALYSIS, generator: generateTechnicalTweet },
-    { type: TWEET_TYPES.NARRATIVE_INSIGHT, generator: generateNarrativeTweet },
+    { type: TWEET_TYPES.NARRATIVE_INSIGHT,  generator: generateNarrativeTweet },
   ];
 
   // Agregar contrarian o system thinking aleatoriamente
   if (Math.random() > 0.5) {
-    tweetTypes.push({ type: TWEET_TYPES.CONTRARIAN, generator: generateContrarianTweet });
+    tweetTypes.push({ type: TWEET_TYPES.CONTRARIAN,     generator: generateContrarianTweet });
   } else {
     tweetTypes.push({ type: TWEET_TYPES.SYSTEM_THINKING, generator: generateSystemTweet });
   }
@@ -337,7 +477,7 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
           type,
           content: tweetContent,
           charCount: tweetContent.length,
-          scheduledFor: null, // se asigna en el pipeline
+          scheduledFor: null,
           posted: false,
           postId: null,
           generatedAt: new Date().toISOString(),
@@ -382,7 +522,7 @@ async function callGPT(userPrompt, tweetType) {
 
   for (let attempt = 1; attempt <= MAX_REGEN_ATTEMPTS; attempt++) {
     const extraInstruction = attempt > 1
-      ? `\n\nCRITICAL: Your previous response was too long. This time you MUST write UNDER ${MAX_CHAR} characters. Count carefully before responding.`
+      ? `\n\nCRITICAL: Your previous response was too long. This time you MUST write UNDER ${MAX_CHAR} characters total (including line breaks). Count every character carefully before responding.`
       : '';
 
     const response = await withRetry(
@@ -394,7 +534,7 @@ async function callGPT(userPrompt, tweetType) {
             { role: 'system', content: BASE_SYSTEM_PROMPT },
             { role: 'user', content: userPrompt + extraInstruction },
           ],
-          temperature: attempt > 1 ? 0.4 : 0.6,
+          temperature: attempt > 1 ? 0.4 : 0.65,
           max_tokens: 300,
         });
         return completion.choices[0].message.content.trim();
@@ -402,7 +542,7 @@ async function callGPT(userPrompt, tweetType) {
       { label: `callGPT(${tweetType})`, ...config.retry }
     );
 
-    // Limpiar comillas envolventes
+    // Limpiar comillas envolventes si las hay
     const text = response.replace(/^["']|["']$/g, '').trim();
 
     if (text.length <= MAX_CHAR) {
@@ -415,7 +555,6 @@ async function callGPT(userPrompt, tweetType) {
     log.warn(`Tweet demasiado largo en intento ${attempt}: ${text.length} chars > ${MAX_CHAR}. Regenerando...`);
   }
 
-  // Si después de MAX_REGEN_ATTEMPTS sigue largo, loguear error y retornar null (no publicar)
   log.error(`Tweet tipo ${tweetType} superó ${MAX_CHAR} chars en todos los intentos. Descartando.`);
   return null;
 }
