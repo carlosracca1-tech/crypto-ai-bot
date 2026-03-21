@@ -213,6 +213,38 @@ async function fetchTokenDetails(tokenId) {
   };
 }
 
+// ─── OHLC sintético desde historial de precios ────────────────────────────────
+
+/**
+ * CoinGecko free tier devuelve solo ~23 candles para ohlc?days=90 (granularidad
+ * semanal/4h). Con menos de 50 candles no se puede calcular MA50 ni detectar
+ * tendencia. Solución: construir OHLC diario sintético desde market_chart,
+ * que sí retorna datos diarios para 90+ días en cualquier plan.
+ *
+ * open  = cierre del día anterior
+ * close = precio del día
+ * high  = max(open, close) con +0.15% de wick estimado
+ * low   = min(open, close) con -0.15% de wick estimado
+ */
+function buildOhlcFromPriceHistory(priceHistory) {
+  if (!priceHistory?.prices || priceHistory.prices.length < 2) return [];
+
+  return priceHistory.prices.map((p, i, arr) => {
+    const open  = i > 0 ? arr[i - 1].price : p.price;
+    const close = p.price;
+    const high  = Math.max(open, close) * 1.0015;
+    const low   = Math.min(open, close) * 0.9985;
+    return {
+      timestamp: p.timestamp,
+      date:      new Date(p.timestamp).toISOString(),
+      open,
+      high,
+      low,
+      close,
+    };
+  });
+}
+
 /**
  * Obtiene el snapshot completo del mercado AI (top N tokens con OHLC)
  * @returns {Promise<object>}
@@ -226,15 +258,29 @@ async function getFullMarketSnapshot() {
   const topTokens = overview.slice(0, config.tokens.topN);
 
   // 2. OHLC y historial de precios para top tokens
+  const MIN_CANDLES = 50; // mínimo para calcular MA50 y detectar tendencia
   const enriched = [];
   for (const token of topTokens) {
     try {
       log.info(`Enriqueciendo datos para ${token.symbol}...`);
 
-      const ohlc = await fetchOHLC(token.id, config.technicalAnalysis.ohlcDays);
+      const ohlcRaw = await fetchOHLC(token.id, config.technicalAnalysis.ohlcDays);
       await sleep(config.coingecko.rateLimit);
       const history = await fetchPriceHistory(token.id, config.technicalAnalysis.ohlcDays);
       await sleep(config.coingecko.rateLimit);
+
+      // Si CoinGecko devuelve pocos candles (granularidad semanal/4h),
+      // usar OHLC sintético construido desde el historial diario de precios
+      let ohlc = ohlcRaw;
+      if (ohlc.length < MIN_CANDLES) {
+        const synthetic = buildOhlcFromPriceHistory(history);
+        if (synthetic.length >= MIN_CANDLES) {
+          log.info(`${token.symbol}: OHLC API ${ohlc.length} candles → usando sintético diario (${synthetic.length} candles)`);
+          ohlc = synthetic;
+        } else {
+          log.warn(`${token.symbol}: OHLC insuficiente (API: ${ohlcRaw.length}, sintético: ${synthetic.length})`);
+        }
+      }
 
       enriched.push({ ...token, ohlc, history });
     } catch (err) {
