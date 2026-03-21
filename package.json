@@ -1,0 +1,41 @@
+{
+  "name": "crypto-ai-bot",
+  "version": "1.0.0",
+  "description": "Autonomous AI crypto analysis and Twitter posting bot",
+  "main": "src/pipeline.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node scheduler/cron-argentina.js",
+    "start:pm2": "pm2 start ecosystem.config.js",
+    "stop:pm2": "pm2 stop crypto-ai-bot",
+    "logs": "pm2 logs crypto-ai-bot",
+    "pipeline": "node src/pipeline.js",
+    "pipeline:morning": "node src/pipeline.js --force --type=market_insight",
+    "pipeline:afternoon": "node src/pipeline.js --force --type=technical_analysis",
+    "pipeline:evening": "node src/pipeline.js --force --type=narrative_insight",
+    "dry-run": "node scripts/dryRun.js",
+    "review": "node scripts/reviewTweets.js",
+    "test-market": "node scripts/testMarket.js",
+    "test-narrative": "node scripts/testNarrative.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "axios-retry": "^4.1.0",
+    "chartjs-node-canvas": "^4.1.6",
+    "chart.js": "^3.9.1",
+    "dotenv": "^16.4.5",
+    "fs-extra": "^11.2.0",
+    "node-cron": "^3.0.3",
+    "openai": "^4.47.1",
+    "technicalindicators": "^3.1.0",
+    "twitter-api-v2": "^1.17.2",
+    "winston": "^3.13.0",
+    "winston-daily-rotate-file": "^5.0.0",
+    "simple-statistics": "^7.8.3",
+    "canvas": "^2.11.2",
+    "sharp": "^0.33.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
