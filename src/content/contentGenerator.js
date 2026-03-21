@@ -27,50 +27,42 @@ const TWEET_TYPES = {
 
 // ─── System prompt base ────────────────────────────────────────────────────────
 
-const BASE_SYSTEM_PROMPT = `You are a top crypto operator — sharp, experienced, slightly contrarian. You've been trading AI tokens since before the narrative exploded. You share real-time reads on the market in plain English. No jargon. No report language. Pure signal.
+const BASE_SYSTEM_PROMPT = `You are a top crypto operator. Sharp. Contrarian. In the market every day.
 
-YOUR TWEET STRUCTURE (always follow this):
-1. HOOK — first line stops the scroll. One punchy observation or tension point.
-2. INSIGHT — one concrete data point or signal, explained in plain English. Not a number dump.
-3. TAKE — your interpretation. What does this mean? Who gets trapped? What's the non-obvious move?
+STRUCTURE (always 3 lines, always this order):
+1. HOOK — one line. Stops the scroll. A tension or observation, not a summary.
+2. INSIGHT — one signal in plain English. What's the market actually doing?
+3. TAKE — your read. Implicit. Leave something unsaid. Make them think.
 
-FORMAT RULES:
-- 3 to 4 short lines max. Never a dense paragraph.
-- Each line should feel like a separate punch.
-- Use line breaks between hook, insight, and take.
-- English only. No emojis. No hashtags. No "follow for more".
-- No financial advice. No guaranteed calls.
+COMPRESSION RULES (non-negotiable):
+- Write a draft, then cut 30% of the words. Keep the punch, kill the filler.
+- Every word must earn its place. If it explains too much, cut it.
+- Short > complete. Impact > explanation. Implied > stated.
+- Do NOT explain the take fully. Let the reader connect the last dot.
+- 3 lines. No more. Tight line breaks. No dense blocks.
 
-VOICE — sound like this:
-- "momentum is building but nobody's talking about it"
+VOICE:
 - "price isn't breaking — that's the signal"
-- "this is where people get trapped"
-- "market is pricing in X but the data says Y"
-- "the narrative is loud. the price is quiet."
+- "narrative loud. price quiet."
 - "everyone's watching the wrong thing"
+- "this is where people get trapped"
+- "momentum building. nobody noticed."
 
-DO NOT sound like this (banned phrases):
-- "indicating bullish bias"
-- "technical score"
-- "composite score"
-- "RSI showing oversold conditions"
-- "narrative strength is moderate"
-- "the market phase is consolidation"
-- "bullish/bearish token ratio"
-- "it seems", "I think", "in my view"
-- Any phrase that sounds like a report summary
+BANNED (instant disqualify):
+- "indicating bullish bias" / "technical score" / "composite score"
+- "narrative strength" / "market phase" / "token ratio"
+- "it seems" / "I think" / "in my view"
+- Any sentence that reads like a report line
 
-TRANSLATE signals to human English:
-- RSI below 35 → "price has been beaten down hard"
-- RSI above 70 → "momentum is stretched — latecomers are still buying"
-- MACD bullish crossover → "momentum is flipping positive"
-- Price above all MAs → "structure is clean"
-- High volume + price up → "real buying pressure, not a fake move"
-- Narrative vs price divergence → "the story is loud but price isn't moving — something's off"
+SIGNAL TRANSLATION:
+- RSI < 35 → "price beaten down hard"
+- RSI > 70 → "momentum stretched — latecomers still buying"
+- MACD bullish → "momentum flipping"
+- Above all MAs → "structure clean"
+- Volume spike → "real conviction behind the move"
+- Narrative ≠ price → "story is loud. price isn't listening."
 
-GOAL: Make someone who doesn't know what RSI is understand the market situation instantly, while still giving real analysts something to think about.
-
-HARD LIMIT: The entire tweet must be under 278 characters total. Count carefully.`;
+HARD LIMIT: Under 278 characters total. Count before submitting.`;
 
 // ─── Helpers de traducción de señales ─────────────────────────────────────────
 
@@ -148,24 +140,21 @@ async function generateMarketInsightTweet(fusionData) {
   const totalTokens = (macroSignals.bullishTokenCount || 0) + (macroSignals.bearishTokenCount || 0);
   const bullPct = totalTokens > 0 ? Math.round((macroSignals.bullishTokenCount / totalTokens) * 100) : 0;
 
-  const prompt = `Write ONE market insight tweet about the AI crypto sector right now.
+  const prompt = `Write ONE market insight tweet. 3 lines. Tight.
 
-SITUATION:
-- Sector is ${interpretMarketPhase(macroSignals.marketPhase)}
-- ${bullPct}% of AI tokens are up in the last 24h (${macroSignals.bullishTokenCount} up, ${macroSignals.bearishTokenCount} down)
-- Average move across the sector: ${macroSignals.avgChange24h > 0 ? '+' : ''}${macroSignals.avgChange24h}% in 24h
-- Dominant narrative right now: "${macroSignals.dominantNarrative}"
-- Market mood: ${macroSignals.overallSentiment}
-- Biggest winner 24h: ${runner?.symbol || 'N/A'} (${runner?.change24h?.toFixed(1) || 'N/A'}%)
-- Biggest loser 24h: ${laggard?.symbol || 'N/A'} (${laggard?.change24h?.toFixed(1) || 'N/A'}%)
-- Leading AI token right now: ${top?.symbol || 'N/A'} at ${formatPrice(top?.currentPrice)}
+DATA:
+- Sector: ${interpretMarketPhase(macroSignals.marketPhase)}
+- ${bullPct}% of AI tokens up in 24h
+- Avg move: ${macroSignals.avgChange24h > 0 ? '+' : ''}${macroSignals.avgChange24h}%
+- Narrative: "${macroSignals.dominantNarrative}" — mood: ${macroSignals.overallSentiment}
+- Top mover: ${runner?.symbol || 'N/A'} ${runner?.change24h?.toFixed(1) || 'N/A'}% | Worst: ${laggard?.symbol || 'N/A'} ${laggard?.change24h?.toFixed(1) || 'N/A'}%
+- Leading token: ${top?.symbol || 'N/A'} at ${formatPrice(top?.currentPrice)}
 
-TWEET STRUCTURE:
-Line 1 (Hook): Something sharp about what's actually happening in the sector — not a summary, a read.
-Line 2 (Insight): One specific data point from above, explained in plain English. What's the contrast or tension?
-Line 3 (Take): What does this mean? Who's right? Who gets trapped if this continues?
+Line 1 (Hook): Sharp read on the sector. Not a summary — a real observation. Tension or contrast.
+Line 2 (Insight): One data point, plain English. What's the market doing that people aren't saying out loud?
+Line 3 (Take): Your read. Keep something implicit. Don't over-explain. Leave them thinking.
 
-Return ONLY the tweet text. Max 278 characters total. Use line breaks between sections.`;
+Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
 
   return callGPT(prompt, TWEET_TYPES.MARKET_INSIGHT);
 }
@@ -195,20 +184,19 @@ async function generateTechnicalTweet(fusionData) {
     : direction?.includes('bear') ? 'setup leans bearish'
     : 'setup is mixed — no clear edge';
 
-  const prompt = `Write ONE technical analysis tweet about ${focusToken.symbol} (${focusToken.name}).
+  const prompt = `Write ONE price action tweet on ${focusToken.symbol}. 3 lines. Cut every unnecessary word.
 
-PRICE ACTION:
-- Price: ${formatPrice(focusToken.currentPrice)} — ${focusToken.change24h >= 0 ? 'up' : 'down'} ${Math.abs(focusToken.change24h || 0).toFixed(1)}% in 24h
-- Overall setup: ${biasPlain}
-- Key signals: ${signalSummary || 'signals are mixed'}
-${brkRead ? `- Structure note: ${brkRead}` : ''}
+DATA:
+- ${formatPrice(focusToken.currentPrice)} — ${focusToken.change24h >= 0 ? 'up' : 'down'} ${Math.abs(focusToken.change24h || 0).toFixed(1)}% in 24h
+- Setup: ${biasPlain}
+- Signals: ${signalSummary || 'mixed — no clear edge'}
+${brkRead ? `- Structure: ${brkRead}` : ''}
 
-TWEET STRUCTURE:
-Line 1 (Hook): One punchy observation about ${focusToken.symbol}'s price action or structure. Make someone stop scrolling.
-Line 2 (Insight): Explain what the key signal is in plain English. No jargon. What's the market actually doing?
-Line 3 (Take): What does this mean for people watching this token? Is this a trap or an opportunity?
+Line 1 (Hook): One sharp observation about ${focusToken.symbol} right now. What's the thing people aren't saying?
+Line 2 (Insight): The key signal in plain English. No jargon. What's actually happening?
+Line 3 (Take): Your read. Implicit. Don't spell it out. Leave one thing for them to figure out.
 
-Return ONLY the tweet text. Max 278 characters total. Use line breaks between sections. Do NOT use words like "technical score", "composite score", "RSI showing", "indicating bullish bias".`;
+Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
 
   return callGPT(prompt, TWEET_TYPES.TECHNICAL_ANALYSIS);
 }
@@ -226,22 +214,21 @@ async function generateNarrativeTweet(fusionData) {
   const alertTopic  = aiNarrativeAnalysis?.emergingNarrativeAlert?.topic;
   const alertConf   = aiNarrativeAnalysis?.emergingNarrativeAlert?.confidence;
 
-  const prompt = `Write ONE narrative insight tweet about what crypto Twitter is really talking about right now in AI tokens.
+  const prompt = `Write ONE narrative tweet on what CT is actually saying about AI tokens. 3 lines. Compress hard.
 
-WHAT'S HAPPENING ON CT:
-- Most discussed right now: ${topTokens}
-- Terms gaining traction in last 12h: ${emerging}
-- Dominant narrative: "${macroSignals.dominantNarrative}" — sentiment is ${macroSignals.overallSentiment}
-- Analyst read: ${aiRead}
-- Key signal from the discourse: ${keyInsight}
-${alertTopic ? `- Something new is emerging: "${alertTopic}" (confidence: ${alertConf})` : ''}
+SIGNAL:
+- Most discussed: ${topTokens}
+- Gaining traction: ${emerging}
+- Narrative: "${macroSignals.dominantNarrative}" — ${macroSignals.overallSentiment}
+- Read: ${aiRead}
+- Key signal: ${keyInsight}
+${alertTopic ? `- Emerging: "${alertTopic}"` : ''}
 
-TWEET STRUCTURE:
-Line 1 (Hook): What's the tension between what people are saying and what's actually happening? Lead with that.
-Line 2 (Insight): What is the crowd focused on? Is the narrative ahead of the price or lagging behind it?
-Line 3 (Take): What does this narrative shift mean? Who's early? Who's late?
+Line 1 (Hook): The gap between what people are saying and what's actually happening. Lead with the tension.
+Line 2 (Insight): Is the narrative ahead of price or lagging? One clear signal from above.
+Line 3 (Take): Who's early. Who's late. Keep it implied — don't state it directly.
 
-Return ONLY the tweet text. Max 278 characters total. Use line breaks between sections. Sound like an insider reading the room, not a report.`;
+Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
 
   return callGPT(prompt, TWEET_TYPES.NARRATIVE_INSIGHT);
 }
@@ -268,25 +255,23 @@ async function generateContrarianTweet(fusionData) {
     ? `${focusToken.symbol} is ${focusToken.change24h >= 0 ? 'up' : 'down'} ${Math.abs(focusToken.change24h || 0).toFixed(1)}% while the narrative says ${macroSignals.overallSentiment}`
     : '';
 
-  const prompt = `Write ONE contrarian tweet about AI crypto markets. Push back on the consensus view.
+  const prompt = `Write ONE contrarian tweet. Challenge the consensus. 3 lines. No hedging. Compress hard.
 
-WHAT THE CROWD THINKS:
-- Dominant view: "${macroSignals.dominantNarrative}" narrative is ${macroSignals.narrativeStrength}
-- Crowd sentiment: ${macroSignals.overallSentiment}
-- Market phase: ${interpretMarketPhase(macroSignals.marketPhase)}
+CROWD THINKS:
+- "${macroSignals.dominantNarrative}" — ${macroSignals.overallSentiment}
+- Sector: ${interpretMarketPhase(macroSignals.marketPhase)}
 
-WHAT THE DATA ACTUALLY SHOWS:
-${insight?.headline ? `- Contrarian signal: ${insight.headline}` : ''}
-${insight?.dataPoints?.slice(0, 3).join('\n') || ''}
-${divSummary ? `- Divergence: ${divSummary}` : ''}
-${tokenContext ? `- Price reality: ${tokenContext}` : ''}
+DATA SAYS:
+${insight?.headline ? `- ${insight.headline}` : ''}
+${insight?.dataPoints?.slice(0, 2).join('\n') || ''}
+${divSummary ? `- ${divSummary}` : ''}
+${tokenContext ? `- ${tokenContext}` : ''}
 
-TWEET STRUCTURE:
-Line 1 (Hook): State what everyone believes — then immediately challenge it. Create tension.
-Line 2 (Insight): What does the data actually show that contradicts the consensus? Be specific.
-Line 3 (Take): What's the non-obvious read here? Who's going to be wrong?
+Line 1 (Hook): What everyone believes — immediately challenged. One sentence, maximum tension.
+Line 2 (Insight): What the data actually shows. Be specific. Make it sting.
+Line 3 (Take): The non-obvious read. Don't explain it fully. Let them sit with it.
 
-Return ONLY the tweet text. Max 278 characters total. Use line breaks. Be sharp and confident. Don't hedge.`;
+Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
 
   return callGPT(prompt, TWEET_TYPES.CONTRARIAN);
 }
@@ -301,21 +286,20 @@ async function generateSystemTweet(fusionData) {
   const aiRead    = aiNarrativeAnalysis?.overallNarrativeAssessment || '';
   const dataPoints = contentInsights?.systemInsight?.dataPoints?.slice(0, 2).join(' / ') || '';
 
-  const prompt = `Write ONE systems-level tweet about the bigger picture in decentralized AI infrastructure.
+  const prompt = `Write ONE macro tweet on decentralized AI infrastructure. Zoom out. 3 lines. Compress hard.
 
-MACRO CONTEXT:
-- Sector structure: ${interpretMarketPhase(macroSignals.marketPhase)}
-- The narrative dominating: "${macroSignals.dominantNarrative}"
-- What's emerging on the edges: ${emerging || 'nothing notable yet'}
-- Bigger picture read: ${aiRead}
-${dataPoints ? `- Structural signals: ${dataPoints}` : ''}
+CONTEXT:
+- Sector: ${interpretMarketPhase(macroSignals.marketPhase)}
+- Dominant narrative: "${macroSignals.dominantNarrative}"
+- Emerging: ${emerging || 'nothing yet'}
+- Read: ${aiRead}
+${dataPoints ? `- Signal: ${dataPoints}` : ''}
 
-TWEET STRUCTURE:
-Line 1 (Hook): Zoom out. What's the structural thing happening that most people are missing? Make it feel important.
-Line 2 (Insight): What's the underlying dynamic — not the price, the structure. What's being built or broken?
-Line 3 (Take): Why does this matter 6 months from now? What's the implication most people aren't seeing?
+Line 1 (Hook): The structural thing most people are missing. Not the price — the bigger picture.
+Line 2 (Insight): What's being built or broken right now. The underlying dynamic, not the candle.
+Line 3 (Take): The implication 6 months from now. Implied, not stated. One thing unsaid.
 
-Return ONLY the tweet text. Max 278 characters total. Use line breaks. Sound like someone who's been watching this space for years, not someone reacting to today's candle.`;
+Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
 
   return callGPT(prompt, TWEET_TYPES.SYSTEM_THINKING);
 }
@@ -360,19 +344,19 @@ Key insight: ${aiNarrativeAnalysis?.keyInsights?.[0] || ''}
 DIVERGENCES / CONTRARIAN:
 ${fusionData.topDivergences?.map(d => d.divergence?.description).filter(Boolean).join('\n') || 'none notable'}
 
-Generate a Twitter thread as a JSON array. Each tweet max 270 characters. Hook → data → analysis → narrative → contrarian → synthesis. Each tweet is a standalone punch, not a report chapter.
+Generate a Twitter thread as a JSON array. Each tweet max 270 characters. Each tweet is a standalone punch — short, compressed, real-time. No dense lines. No report language. Write each tweet, then cut 30% of the words.
 
 Format:
 [
-  {"tweet": "Hook tweet — the one line that makes someone stop scrolling and read the thread", "type": "hook"},
-  {"tweet": "Market overview — what's actually moving and what's not, in plain English", "type": "market"},
-  {"tweet": "Best technical setup in the sector right now — no jargon, just the read", "type": "technical"},
-  {"tweet": "What CT is saying vs what price is doing — the narrative tension", "type": "narrative"},
-  {"tweet": "The non-obvious read — what most people are getting wrong right now", "type": "contrarian"},
-  {"tweet": "The bigger picture — what this all means 3-6 months from now", "type": "synthesis"}
+  {"tweet": "One line. The thing that makes someone stop and read the whole thread.", "type": "hook"},
+  {"tweet": "What's actually moving and what isn't. Tension in plain English.", "type": "market"},
+  {"tweet": "Best setup in the sector. No jargon. Just the read.", "type": "technical"},
+  {"tweet": "CT vs price. The gap between the story and what's happening.", "type": "narrative"},
+  {"tweet": "What most people are getting wrong. Implicit. Leave something unsaid.", "type": "contrarian"},
+  {"tweet": "The bigger picture. One implication. Short. Make them think.", "type": "synthesis"}
 ]
 
-Rules: No emojis. No hashtags. No report language. Max 270 chars per tweet. Sound like a person, not a bot.`;
+Rules: No emojis. No hashtags. Max 270 chars per tweet. Short sentences. Every word earns its place.
 
   const response = await withRetry(
     async () => {
