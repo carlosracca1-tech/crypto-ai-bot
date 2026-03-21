@@ -356,7 +356,7 @@ Format:
   {"tweet": "The bigger picture. One implication. Short. Make them think.", "type": "synthesis"}
 ]
 
-Rules: No emojis. No hashtags. Max 270 chars per tweet. Short sentences. Every word earns its place.
+Rules: No emojis. No hashtags. Max 270 chars per tweet. Short sentences. Every word earns its place.`;
 
   const response = await withRetry(
     async () => {
