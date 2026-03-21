@@ -377,34 +377,47 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
 // ─── Helper de llamada a GPT ───────────────────────────────────────────────────
 
 async function callGPT(userPrompt, tweetType) {
-  const response = await withRetry(
-    async () => {
-      const openai = getOpenAI();
-      const completion = await openai.chat.completions.create({
-        model: config.openai.model,
-        messages: [
-          { role: 'system', content: BASE_SYSTEM_PROMPT },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.6,
-        max_tokens: 300,
-      });
-      return completion.choices[0].message.content.trim();
-    },
-    { label: `callGPT(${tweetType})`, ...config.retry }
-  );
+  const MAX_CHAR = 278;
+  const MAX_REGEN_ATTEMPTS = 3;
 
-  // Limpiar respuesta - remover comillas envolventes si las hay
-  let text = response.replace(/^["']|["']$/g, '').trim();
+  for (let attempt = 1; attempt <= MAX_REGEN_ATTEMPTS; attempt++) {
+    const extraInstruction = attempt > 1
+      ? `\n\nCRITICAL: Your previous response was too long. This time you MUST write UNDER ${MAX_CHAR} characters. Count carefully before responding.`
+      : '';
 
-  // Hard truncation: Twitter permite 280 chars, usamos 278 de margen
-  if (text.length > 278) {
-    // Cortar en el último espacio antes del límite para no partir palabras
-    text = text.substring(0, 278).replace(/\s+\S*$/, '').trim();
-    log.warn(`Tweet truncado a ${text.length} chars (era ${response.length})`);
+    const response = await withRetry(
+      async () => {
+        const openai = getOpenAI();
+        const completion = await openai.chat.completions.create({
+          model: config.openai.model,
+          messages: [
+            { role: 'system', content: BASE_SYSTEM_PROMPT },
+            { role: 'user', content: userPrompt + extraInstruction },
+          ],
+          temperature: attempt > 1 ? 0.4 : 0.6,
+          max_tokens: 300,
+        });
+        return completion.choices[0].message.content.trim();
+      },
+      { label: `callGPT(${tweetType})`, ...config.retry }
+    );
+
+    // Limpiar comillas envolventes
+    const text = response.replace(/^["']|["']$/g, '').trim();
+
+    if (text.length <= MAX_CHAR) {
+      if (attempt > 1) {
+        log.info(`Tweet regenerado OK en intento ${attempt} (${text.length} chars)`);
+      }
+      return text;
+    }
+
+    log.warn(`Tweet demasiado largo en intento ${attempt}: ${text.length} chars > ${MAX_CHAR}. Regenerando...`);
   }
 
-  return text;
+  // Si después de MAX_REGEN_ATTEMPTS sigue largo, loguear error y retornar null (no publicar)
+  log.error(`Tweet tipo ${tweetType} superó ${MAX_CHAR} chars en todos los intentos. Descartando.`);
+  return null;
 }
 
 module.exports = {
