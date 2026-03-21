@@ -184,6 +184,17 @@ async function generateTechnicalTweet(fusionData) {
     : direction?.includes('bear') ? 'setup leans bearish'
     : 'setup is mixed — no clear edge';
 
+  // Decision layer: extract support/resistance for conditional framing
+  const support    = focusToken.breakout?.support;
+  const resistance = focusToken.breakout?.resistance;
+  const decisionCtx = support && resistance
+    ? `Key levels: support ${formatPrice(support)} / resistance ${formatPrice(resistance)}`
+    : support
+      ? `Key level: support at ${formatPrice(support)}`
+      : resistance
+        ? `Key level: resistance at ${formatPrice(resistance)}`
+        : '';
+
   const prompt = `Write ONE price action tweet on ${focusToken.symbol}. 3 lines. Cut every unnecessary word.
 
 DATA:
@@ -191,10 +202,15 @@ DATA:
 - Setup: ${biasPlain}
 - Signals: ${signalSummary || 'mixed — no clear edge'}
 ${brkRead ? `- Structure: ${brkRead}` : ''}
+${decisionCtx ? `- ${decisionCtx}` : ''}
 
 Line 1 (Hook): One sharp observation about ${focusToken.symbol} right now. What's the thing people aren't saying?
 Line 2 (Insight): The key signal in plain English. No jargon. What's actually happening?
-Line 3 (Take): Your read. Implicit. Don't spell it out. Leave one thing for them to figure out.
+Line 3 (Decision): A conditional scenario using the key level. Use ONE of these frames:
+  - "If [level] holds → [scenario]"
+  - "If [level] breaks → [scenario]"
+  - "Watch for [condition] — then [implication]"
+  Do NOT give buy/sell advice. Frame it as what to watch, not what to do.
 
 Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
 

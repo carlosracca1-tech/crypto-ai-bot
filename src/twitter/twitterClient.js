@@ -1,27 +1,28 @@
 'use strict';
 
 /**
- * Twitter Client — OAuth 2.0 User Context
+ * Twitter Client — OAuth 2.0 (posting) + OAuth 1.0a (media upload)
  *
- * Usa OAuth 2.0 (Client ID + Refresh Token) para postear tweets.
- * El access token se refresca automáticamente antes de cada run.
- * No soporta media upload (requiere API v1.1 que no está en free tier con OAuth 2.0).
+ * - Tweets: OAuth 2.0 user context via getValidClient() / refreshOAuth2Token()
+ * - Media:  OAuth 1.0a via v1.uploadMedia() (Twitter API v1.1)
+ *
+ * IMPORTANT: never do `new TwitterApi(accessToken)` for posting — that creates
+ * a Bearer / app-only client that can't write tweets on behalf of a user.
  */
 
-const { config }     = require('../config');
+const fs  = require('fs');
+const { TwitterApi } = require('twitter-api-v2');
+
+const { config }          = require('../config');
 const { createModuleLogger } = require('../utils/logger');
 const { withRetry, sleep }   = require('../utils/retry');
 const { getValidClient }     = require('../utils/tokenManager');
+const { generateChartForToken } = require('../charts/chartGenerator');
 
 const log = createModuleLogger('TwitterClient');
 
-// ─── Cliente OAuth 2.0 ────────────────────────────────────────────────────────
+// ─── OAuth 2.0 posting client ──────────────────────────────────────────────────
 
-/**
- * Devuelve el cliente OAuth 2.0 user context correcto.
- * NUNCA usar new TwitterApi(tokenString) — eso crea un cliente app-only (Bearer).
- * El client que devuelve refreshOAuth2Token() SÍ es user context.
- */
 async function getPostingClient() {
   return await getValidClient();
 }
@@ -35,17 +36,50 @@ async function verifyCredentials() {
   return me.data;
 }
 
+// ─── Media upload (OAuth 1.0a — Twitter v1.1) ─────────────────────────────────
+
+/**
+ * Sube una imagen a Twitter usando OAuth 1.0a y devuelve el media_id.
+ * @param {string} filePath - Ruta absoluta al archivo PNG/JPG
+ * @returns {Promise<string|null>} media_id o null si falla
+ */
+async function uploadMedia(filePath) {
+  if (!filePath) return null;
+
+  if (!fs.existsSync(filePath)) {
+    log.warn(`uploadMedia: archivo no encontrado: ${filePath}`);
+    return null;
+  }
+
+  const { appKey, appSecret, accessToken, accessSecret } = config.twitter;
+
+  if (!appKey || !appSecret || !accessToken || !accessSecret) {
+    log.warn('uploadMedia: credenciales OAuth 1.0a no configuradas (APP_KEY/SECRET/ACCESS_TOKEN/SECRET)');
+    return null;
+  }
+
+  try {
+    const oauthClient = new TwitterApi({ appKey, appSecret, accessToken, accessSecret });
+    const mediaId = await oauthClient.v1.uploadMedia(filePath);
+    log.info(`Media subida correctamente. media_id: ${mediaId}`);
+    return String(mediaId);
+  } catch (err) {
+    log.error(`Error subiendo media: ${err.message}`);
+    return null;
+  }
+}
+
 // ─── Publicación de un tweet ──────────────────────────────────────────────────
 
 /**
- * Publica un tweet de texto.
- * @param {string} text        - Contenido del tweet (máx 280 chars)
- * @param {string|null} _img   - Ignorado (media upload no disponible con OAuth 2.0 free)
- * @param {string|null} replyToId
+ * Publica un tweet de texto (con media opcional).
+ * @param {string}      text       - Contenido del tweet (máx 280 chars)
+ * @param {string|null} mediaId    - media_id de imagen ya subida (o null)
+ * @param {string|null} replyToId  - tweet ID al que responder
  */
-async function postTweet(text, _img = null, replyToId = null) {
+async function postTweet(text, mediaId = null, replyToId = null) {
   if (config.content.dryRun) {
-    log.info(`[DRY RUN] Tweet (${text.length} chars):\n${text}`);
+    log.info(`[DRY RUN] Tweet (${text.length} chars)${mediaId ? ' [+imagen]' : ''}:\n${text}`);
     return { id: `dryrun_${Date.now()}`, text };
   }
 
@@ -58,7 +92,8 @@ async function postTweet(text, _img = null, replyToId = null) {
   const client = await getPostingClient();
 
   const payload = { text };
-  if (replyToId) payload.reply = { in_reply_to_tweet_id: replyToId };
+  if (replyToId) payload.reply  = { in_reply_to_tweet_id: replyToId };
+  if (mediaId)   payload.media  = { media_ids: [String(mediaId)] };
 
   const result = await withRetry(
     async () => {
@@ -68,7 +103,7 @@ async function postTweet(text, _img = null, replyToId = null) {
     { label: 'postTweet', ...config.retry }
   );
 
-  log.info(`✅ Tweet publicado! ID: ${result.id} | ${text.length} chars`);
+  log.info(`✅ Tweet publicado! ID: ${result.id} | ${text.length} chars${mediaId ? ' | con imagen' : ''}`);
   return result;
 }
 
@@ -107,36 +142,60 @@ async function postThread(threadTweets) {
   return published;
 }
 
-// ─── Publicación inmediata de lista de tweets ─────────────────────────────────
+// ─── Publicación inmediata ─────────────────────────────────────────────────────
 
-async function publishTweetsImmediate(tweets) {
+/**
+ * Publica una lista de tweets. Para tweets de tipo `technical_analysis`,
+ * genera automáticamente un gráfico y lo adjunta.
+ *
+ * @param {Array}       tweets     - Lista de tweet objects del pipeline
+ * @param {object|null} fusionData - Datos del pipeline (para generar chart)
+ */
+async function publishTweetsImmediate(tweets, fusionData = null) {
   const results = [];
 
   for (const tweet of tweets) {
     if (tweet.posted) continue;
 
+    let mediaId = null;
+
+    // ── Generar y subir chart para tweet técnico ────────────────────────────
+    if (tweet.type === 'technical_analysis' && fusionData) {
+      try {
+        log.info('Generando chart para tweet técnico...');
+        const chartPath = await generateChartForToken(fusionData);
+
+        if (chartPath) {
+          log.info(`Chart generado: ${chartPath}. Subiendo a Twitter...`);
+          mediaId = await uploadMedia(chartPath);
+          if (mediaId) {
+            log.info(`Chart subido correctamente. media_id: ${mediaId}`);
+          } else {
+            log.warn('Chart no se pudo subir — tweet sin imagen');
+          }
+        }
+      } catch (chartErr) {
+        log.error(`Error generando chart: ${chartErr.message}`);
+      }
+    }
+
+    // ── Publicar tweet ──────────────────────────────────────────────────────
     try {
-      const published = await postTweet(tweet.content);
+      const published = await postTweet(tweet.content, mediaId);
       tweet.posted   = true;
       tweet.postId   = published.id;
       tweet.postedAt = new Date().toISOString();
+      tweet.hasChart = !!mediaId;
 
-      results.push({ success: true, tweetId: published.id, type: tweet.type });
+      results.push({ success: true, tweetId: published.id, type: tweet.type, hasChart: !!mediaId });
       await sleep(5000);
     } catch (err) {
-      log.error(`Error publicando tweet: ${err.message}`);
+      log.error(`Error publicando tweet (${tweet.type}): ${err.message}`);
       results.push({ success: false, error: err.message, type: tweet.type });
     }
   }
 
   return results;
-}
-
-// ─── Upload de media (no disponible) ─────────────────────────────────────────
-
-async function uploadMedia() {
-  log.warn('uploadMedia: no disponible con OAuth 2.0 free tier (requiere API v1.1)');
-  return null;
 }
 
 module.exports = {
@@ -145,6 +204,6 @@ module.exports = {
   postTweet,
   postThread,
   publishTweetsImmediate,
-  // Legacy aliases
+  // Legacy alias
   publishScheduledTweets: publishTweetsImmediate,
 };
