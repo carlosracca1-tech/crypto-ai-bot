@@ -17,7 +17,9 @@
     "review": "node scripts/reviewTweets.js",
     "test-market": "node scripts/testMarket.js",
     "test-narrative": "node scripts/testNarrative.js",
-    "test:oauth1": "node scripts/testMediaUpload.js"
+    "test:oauth1": "node scripts/testMediaUpload.js",
+    "engagement": "node scripts/runEngagement.js",
+    "engagement:dry": "DRY_RUN=true node scripts/runEngagement.js"
   },
   "dependencies": {
     "axios": "^1.6.8",

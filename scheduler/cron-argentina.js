@@ -4,14 +4,16 @@ require('dotenv').config();
 
 const cron = require('node-cron');
 const { createModuleLogger } = require('../src/utils/logger');
-const { runPipeline } = require('../src/pipeline');
-const { config } = require('../src/config');
+const { runPipeline }   = require('../src/pipeline');
+const { runEngagement } = require('../src/engagement/engagementManager');
+const { config }        = require('../src/config');
 
 const log = createModuleLogger('Scheduler-AR');
 
 // ─── Horarios Argentina (UTC-3) convertidos a UTC ──────────────────────────────
 //
 //   9:30 ART  →  12:30 UTC  →  '30 12 * * *'  →  market_insight
+//  11:00 ART  →  14:00 UTC  →  '0  14 * * *'  →  engagement (replies)
 //  13:30 ART  →  16:30 UTC  →  '30 16 * * *'  →  technical_analysis
 //  19:30 ART  →  22:30 UTC  →  '30 22 * * *'  →  narrative_insight
 //
@@ -23,27 +25,36 @@ const SCHEDULE = [
     cron:      '30 12 * * *',
     tweetType: 'market_insight',
     label:     '📊 Market Insight',
+    type:      'pipeline',
+  },
+  {
+    name:      'Engagement (11:00 ART)',
+    cron:      '0 14 * * *',
+    label:     '💬 Engagement',
+    type:      'engagement',
   },
   {
     name:      'Mediodía (13:30 ART)',
     cron:      '30 16 * * *',
     tweetType: 'technical_analysis',
     label:     '📈 Technical Analysis',
+    type:      'pipeline',
   },
   {
     name:      'Noche (19:30 ART)',
     cron:      '30 22 * * *',
     tweetType: 'narrative_insight',
     label:     '🧠 Narrative Insight',
+    type:      'pipeline',
   },
 ];
 
 // Llevar registro de cuáles están corriendo para no lanzar dos a la vez
 const running = {};
 
-// ─── Ejecutor de slot ──────────────────────────────────────────────────────────
+// ─── Ejecutor de slot pipeline ─────────────────────────────────────────────────
 
-async function executeSlot(slot) {
+async function executePipelineSlot(slot) {
   if (running[slot.name]) {
     log.warn(`${slot.name} ya está en ejecución, saltando...`);
     return;
@@ -57,10 +68,10 @@ async function executeSlot(slot) {
 
   try {
     const result = await runPipeline({
-      dryRun:     config.content.dryRun,
-      forceRun:   true,      // permite correr múltiples veces por día
+      dryRun:      config.content.dryRun,
+      forceRun:    true,
       skipPosting: false,
-      tweetType:  slot.tweetType,
+      tweetType:   slot.tweetType,
     });
 
     if (result) {
@@ -73,6 +84,38 @@ async function executeSlot(slot) {
   } finally {
     running[slot.name] = false;
   }
+}
+
+// ─── Ejecutor de slot engagement ──────────────────────────────────────────────
+
+async function executeEngagementSlot(slot) {
+  if (running[slot.name]) {
+    log.warn(`${slot.name} ya está en ejecución, saltando...`);
+    return;
+  }
+
+  running[slot.name] = true;
+  const now = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+  log.info(`\n${'═'.repeat(60)}`);
+  log.info(`SLOT: ${slot.label} | Hora AR: ${now}`);
+  log.info(`${'═'.repeat(60)}`);
+
+  try {
+    const result = await runEngagement({ dryRun: config.content.dryRun });
+    log.info(`✓ Engagement completado | Replies: ${result.posted || 0} | Skipped: ${result.skipped || 0}`);
+  } catch (err) {
+    log.error(`✗ Error en ${slot.name}: ${err.message}`);
+    log.error(err.stack);
+  } finally {
+    running[slot.name] = false;
+  }
+}
+
+// ─── Dispatcher ────────────────────────────────────────────────────────────────
+
+function executeSlot(slot) {
+  if (slot.type === 'engagement') return executeEngagementSlot(slot);
+  return executePipelineSlot(slot);
 }
 
 // ─── Inicio ────────────────────────────────────────────────────────────────────
