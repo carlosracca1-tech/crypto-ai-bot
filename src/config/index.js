@@ -91,11 +91,13 @@ const config = {
 
   // ─── Contenido ─────────────────────────────────────────────────────────────
   content: {
-    tweetsPerDay: parseInt(process.env.TWEETS_PER_DAY || '3', 10),
+    tweetsPerDay: parseInt(process.env.TWEETS_PER_DAY || '6', 10),
     threadEveryNDays: parseInt(process.env.THREAD_EVERY_N_DAYS || '3', 10),
     dryRun: process.env.DRY_RUN === 'true',
     manualApproval: process.env.MANUAL_APPROVAL === 'true',
-    postingSpreadHours: [9, 14, 19], // horas UTC de publicación
+    // Horarios dinámicos — el scheduler los calcula aleatoriamente cada día
+    // Este array es solo referencia; el scheduler real usa TWEET_WINDOWS
+    postingSpreadHours: [8, 11, 14, 17, 19, 21],
   },
 
   // ─── Imágenes ──────────────────────────────────────────────────────────────
