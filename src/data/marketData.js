@@ -260,6 +260,8 @@ async function getFullMarketSnapshot() {
   // 2. OHLC y historial de precios para top tokens
   const MIN_CANDLES = 50; // mínimo para calcular MA50 y detectar tendencia
   const enriched = [];
+  const failedTokens = [];
+
   for (const token of topTokens) {
     try {
       log.info(`Enriqueciendo datos para ${token.symbol}...`);
@@ -286,7 +288,44 @@ async function getFullMarketSnapshot() {
     } catch (err) {
       log.error(`Error enriqueciendo ${token.symbol}: ${err.message}`);
       enriched.push({ ...token, ohlc: [], history: null });
+      failedTokens.push({ symbol: token.symbol, error: err.message });
+
+      // FIX: si el error es 429 (rate limit), esperar un cooldown largo antes
+      // del próximo token para romper la cascada de fallos consecutivos.
+      // Sin este sleep, el siguiente token empieza casi de inmediato y
+      // también falla porque la API sigue bloqueada.
+      if (err.message && err.message.includes('429')) {
+        const cooldown = config.coingecko.rateLimitCooldownMs || 15000;
+        log.warn(`429 en ${token.symbol} — cooldown ${cooldown}ms antes del próximo token`);
+        await sleep(cooldown);
+      }
     }
+  }
+
+  // Alerta de degradación si ≥30% de los tokens fallaron
+  const failureRate = failedTokens.length / topTokens.length;
+  if (failedTokens.length > 0) {
+    log.warn(`Snapshot degradado: ${failedTokens.length}/${topTokens.length} tokens sin OHLC (${(failureRate * 100).toFixed(0)}%)`);
+  }
+  if (failureRate >= 0.3) {
+    setImmediate(async () => {
+      try {
+        const { sendErrorAlert } = require('../alerts/emailAlerts');
+        await sendErrorAlert({
+          module: 'MarketData — Snapshot Degradado',
+          error: `${failedTokens.length}/${topTokens.length} tokens fallaron al obtener OHLC (${(failureRate * 100).toFixed(0)}%)`,
+          stack: failedTokens.map(t => `${t.symbol}: ${t.error}`).join('\n'),
+          context: {
+            tokens_fallidos: failedTokens.map(t => t.symbol).join(', '),
+            tasa_fallo: `${(failureRate * 100).toFixed(0)}%`,
+            causa_probable: 'CoinGecko rate limit (429)',
+            accion_recomendada: 'Subir COINGECKO_RATE_LIMIT_MS a 3000 en Railway Variables',
+          },
+        });
+      } catch (e) {
+        log.error(`No se pudo enviar alerta de degradación: ${e.message}`);
+      }
+    });
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

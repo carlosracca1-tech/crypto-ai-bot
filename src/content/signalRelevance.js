@@ -3,12 +3,17 @@
 /**
  * signalRelevance.js
  *
- * Pre-publish gate: a tweet must answer at least ONE of:
+ * Pre-publish gate: a tweet must answer at least TWO of:
  *   A. What is happening right now (observable fact, price action, on-chain)
  *   B. Why it matters (implication, consequence, structural significance)
  *   C. What to watch next (level, condition, upcoming catalyst)
  *
- * If it fails all three, it is rejected or sent back for regeneration.
+ * Additionally:
+ *   - Tweets that only contain vague rhetorical questions are rejected
+ *   - Tweets with zero forward-looking element (B or C) are rejected
+ *   - Abstract observations without interpretation or implication are rejected
+ *
+ * If it fails, it is sent back for regeneration with a targeted hint.
  * This prevents content that sounds analytical but delivers no actual signal.
  */
 
@@ -37,6 +42,10 @@ const MATTERS_PATTERNS = [
   /\b(risk (is|becomes)|reward|asymmetric|setup|structure (is|shifts|changes))\b/i,
   /\b(market (is|has)|sentiment|positioning|crowded|consensus|expectation)\b/i,
   /\b(catalyst|driver|headwind|tailwind|pressure|demand|supply)\b/i,
+  /\b(where (traps?|longs?|shorts?|traders?|latecomers?) (form|get|are))\b/i,
+  /\b(trapped|squeezed|caught|wrecked|shaken out)\b/i,
+  /\b(not confirming|not following|not backing|divergen(ce|t)|mismatch)\b/i,
+  /\b(consensus|crowd|everyone|narrative)\b.*\b(wrong|missing|ahead|behind|late)\b/i,
 ];
 
 // C: What to watch next
@@ -47,7 +56,31 @@ const WATCH_PATTERNS = [
   /\b(eyes on|monitoring|tracking|waiting for|pending|upcoming)\b/i,
   /\b(target|invalidate(s|d)?|stop|entry|zone|confirm(ation)?)\b/i,
   /\b(this week|next (week|month|quarter)|into (the )?(weekend|Monday|close))\b/i,
+  /\b(if (momentum|this|that|narrative|it) (doesn't|continues|fades|holds|flips|breaks))\b/i,
+  /\b(fades?|reverses?|accelerates?|continues?|stalls?|confirms?)\b/i,
 ];
+
+// ─── Vagueness detection ───────────────────────────────────────────────────────
+// Patterns that indicate a tweet is abstract/rhetorical with no actionable content.
+// A tweet that ONLY matches these (no happening/matters/watch) should be rejected.
+const VAGUE_PATTERNS = [
+  /^(everyone('s)?|the market|CT|people|traders|bulls?|bears?)\s+(is|are|has|have)\s+/i,
+  /\?$/m,                                                       // ends with rhetorical question
+  /\b(is anyone|does anyone|who('s| is)|but is|but are)\b/i,   // unanswered questions
+  /\b(blinding|deafening|screaming|shouting|ignoring)\b/i,     // pure metaphor, no data
+  /\b(sounds? (good|like|nice)|feels? (like|bullish|bearish))\b/i,
+  /\b(everyone knows|no one (knows|is watching|sees))\b/i,
+];
+
+/**
+ * Returns true if the tweet is purely vague — rhetorical questions,
+ * abstract metaphors, no concrete data, no implication, no forward-look.
+ */
+function isVagueTweet(text, happening, matters, watchNext) {
+  if (happening || matters || watchNext) return false; // has at least one real signal
+  const vagueMatches = VAGUE_PATTERNS.filter(p => p.test(text)).length;
+  return vagueMatches >= 2; // two or more vague markers and zero signal → reject
+}
 
 // ─── Core evaluator ───────────────────────────────────────────────────────────
 
@@ -72,13 +105,25 @@ function evaluateSignalRelevance(text) {
 
   const score = [happening, matters, watchNext].filter(Boolean).length;
 
-  const pass   = score >= 1;
+  // Rule 1: Must score >= 2 (answer at least two of the three questions)
+  // Rule 2: Must have at least one forward-looking element (matters OR watchNext)
+  // Rule 3: Purely vague tweets (rhetorical questions, metaphors, no data) always fail
+  const hasForwardLook = matters || watchNext;
+  const vague          = isVagueTweet(text, happening, matters, watchNext);
+
+  const pass   = score >= 2 && hasForwardLook && !vague;
   let reason   = null;
 
   if (!pass) {
-    reason =
-      'Tweet does not answer: what is happening, why it matters, or what to watch. ' +
-      'Add at least one concrete signal, implication, or conditional.';
+    if (vague) {
+      reason = 'Tweet is purely abstract — rhetorical questions and metaphors with no concrete signal.';
+    } else if (!hasForwardLook) {
+      reason = 'Tweet lacks forward-looking element: add interpretation (why it matters) or implication (what to watch).';
+    } else {
+      reason =
+        'Tweet does not answer at least two of: what is happening, why it matters, what to watch. ' +
+        'Add specific data, implication, or conditional framing.';
+    }
   }
 
   log.info(`SignalRelevance: score=${score}/3 | happening=${happening} | matters=${matters} | watchNext=${watchNext} | pass=${pass}`);
@@ -112,10 +157,19 @@ function signalRelevanceGate(text, tweetType = '') {
   if (!result.dimensions.matters)   missing.push('why it matters (implication, structural significance, conditional)');
   if (!result.dimensions.watchNext) missing.push('what to watch next (level, condition, upcoming catalyst)');
 
+  // Detect if the tweet ended with a rhetorical question (common failure mode)
+  const endsWithQuestion = /\?(\s*)$/.test(text.trim());
+  const questionNote = endsWithQuestion
+    ? ' Do NOT end with a rhetorical question — end with a concrete implication or conditional instead.'
+    : '';
+
   const regenerateWith =
-    `This tweet lacks a signal. Missing: ${missing.join('; ')}. ` +
-    `Rewrite to include at least one of these. Lead with the fact or condition. ` +
-    `Be specific — use actual numbers, levels, or named tokens.`;
+    `This tweet lacks depth. It needs at least TWO of these three layers — ` +
+    `and MUST include at least one forward-looking element. ` +
+    `Missing: ${missing.join('; ')}. ` +
+    `Be specific — use token names, price levels, RSI values, or percentage moves. ` +
+    `Replace vague statements with facts. Replace questions with observations or conditionals.` +
+    questionNote;
 
   log.warn(`SignalRelevance FAIL (type=${tweetType}): ${result.reason}`);
 
@@ -131,19 +185,23 @@ function signalRelevanceGate(text, tweetType = '') {
  */
 function buildSignalInstruction(tweetType = '') {
   const base =
-    'SIGNAL REQUIREMENT: This tweet must answer at least one of:\n' +
-    '  (A) What is happening right now — specific price action, data, on-chain fact\n' +
-    '  (B) Why it matters — implication, structure, conditional framing\n' +
-    '  (C) What to watch next — level, condition, or upcoming catalyst\n' +
-    'Generic observations without any of these will be rejected.';
+    'DEPTH REQUIREMENT (mandatory — tweets that fail this are regenerated):\n' +
+    'Every tweet must answer at least TWO of these three questions:\n' +
+    '  (A) OBSERVATION: What is happening right now — specific price action, data point, on-chain fact\n' +
+    '  (B) INTERPRETATION: Why it matters — what this signal means, implication, structural read\n' +
+    '  (C) IMPLICATION: What to watch or what happens next — level, condition, or scenario\n' +
+    'MANDATORY: Must include (B) or (C) — pure observations without meaning or forward-look are rejected.\n' +
+    'BANNED: Rhetorical questions as the final line. Vague metaphors with no data. ' +
+    'Abstract statements that could apply to any market at any time.';
 
   const typeHints = {
-    market_insight:      'Focus on (A): what price or market structure is doing right now.',
-    technical_analysis:  'Focus on (A) + (C): current levels and what breaks next.',
-    fundamental_insight: 'Focus on (A) + (B): on-chain or dev data and its implication.',
-    narrative_insight:   'Focus on (B): why the current narrative is or isn\'t supported by price.',
-    contrarian:          'Focus on (B): what the consensus is missing and why the read is wrong.',
-    callback:            'Focus on (A) + (C): reference a prior call and what happens from here.',
+    market_insight:      'Cover (A) + (B): what the sector is doing AND what that means for positioning.',
+    technical_analysis:  'Cover (A) + (C): current price structure AND the conditional scenario (if X → Y).',
+    fundamental_insight: 'Cover (A) + (B): on-chain or dev data AND why it changes the thesis.',
+    narrative_insight:   'Cover (A) + (B): the narrative vs price gap AND who gets trapped.',
+    contrarian:          'Cover (A) + (B) + (C): the data point that breaks consensus, why it matters, what fades if momentum fails.',
+    callback:            'Cover (A) + (C): reference the prior setup AND what the next level or condition is.',
+    system_thinking:     'Cover (B) + (C): structural implication AND the 6-month scenario.',
   };
 
   const hint = typeHints[tweetType] ? `\n${typeHints[tweetType]}` : '';

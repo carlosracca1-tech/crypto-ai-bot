@@ -25,7 +25,13 @@ const config = {
     apiKey: process.env.COINGECKO_API_KEY || '',
     baseUrl: 'https://api.coingecko.com/api/v3',
     proBaseUrl: 'https://pro-api.coingecko.com/api/v3',
-    rateLimit: parseInt(process.env.COINGECKO_RATE_LIMIT_MS || '1500', 10),
+    // Delay entre requests normales. Free tier: ~30 req/min → mínimo 2000ms.
+    // Recomendado: 2500ms para tener margen. Configurable vía Railway.
+    rateLimit: parseInt(process.env.COINGECKO_RATE_LIMIT_MS || '2500', 10),
+    // Cooldown extra que se aplica SOLO cuando un token falla con 429.
+    // Rompe la cascada: espera que el rate limit window se resetee (~60s)
+    // antes de continuar con el siguiente token.
+    rateLimitCooldownMs: parseInt(process.env.COINGECKO_RATE_LIMIT_COOLDOWN_MS || '15000', 10),
   },
 
   // ─── Tokens a monitorear ───────────────────────────────────────────────────

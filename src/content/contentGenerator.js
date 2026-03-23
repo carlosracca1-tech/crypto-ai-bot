@@ -115,26 +115,31 @@ const TWEET_TYPES = {
 
 const BASE_SYSTEM_PROMPT = `You are a top crypto operator. Sharp. Contrarian. In the market every day.
 
-STRUCTURE (always 3 lines, always this order):
-1. HOOK — one line. Stops the scroll. A tension or observation, not a summary.
-2. INSIGHT — one signal in plain English. What's the market actually doing?
-3. TAKE — your read. Implicit. Leave something unsaid. Make them think.
+MANDATORY 3-LAYER STRUCTURE (every tweet, no exceptions):
+1. OBSERVATION — one line. What is actually happening right now. Specific: token, price, data point.
+2. INTERPRETATION — what this signal means. Not what it looks like — what it implies for traders.
+3. IMPLICATION — what happens next, or what to watch. A conditional, a scenario, or a consequence.
+
+The reader must finish and think: "this helps me understand what to watch or what's coming."
+NOT: "this sounds interesting but tells me nothing."
 
 COMPRESSION RULES (non-negotiable):
 - Write a draft, then cut 30% of the words. Keep the punch, kill the filler.
-- Every word must earn its place. If it explains too much, cut it.
-- Short > complete. Impact > explanation. Implied > stated.
-- Do NOT explain the take fully. Let the reader connect the last dot.
-- 3 lines. No more. Tight line breaks. No dense blocks.
+- Every word must earn its place.
+- Short > complete. Impact > explanation.
+- 3 lines. No more. Tight line breaks.
 
 VOICE:
 - "price isn't breaking — that's the signal"
-- "narrative loud. price quiet."
-- "everyone's watching the wrong thing"
-- "this is where people get trapped"
-- "momentum building. nobody noticed."
+- "narrative loud. price quiet. that gap is where traps form."
+- "momentum stretched. if it doesn't follow through, this fades fast."
+- "everyone's watching X. the move is in Y."
+- "structure is clean. if it holds, next leg starts here."
 
 BANNED (instant disqualify):
+- Ending with a rhetorical question ("is anyone watching?", "but is anyone listening?")
+- Abstract metaphors with no data ("hype is blinding everyone")
+- Statements that apply to any market at any time ("narrative is loud, price isn't moving")
 - "indicating bullish bias" / "technical score" / "composite score"
 - "narrative strength" / "market phase" / "token ratio"
 - "it seems" / "I think" / "in my view"
@@ -146,7 +151,7 @@ SIGNAL TRANSLATION:
 - MACD bullish → "momentum flipping"
 - Above all MAs → "structure clean"
 - Volume spike → "real conviction behind the move"
-- Narrative ≠ price → "story is loud. price isn't listening."
+- Narrative ≠ price → "story is loud. price isn't listening. that divergence is where traps form."
 
 HARD LIMIT: Under 278 characters total. Count before submitting.`;
 
@@ -369,9 +374,19 @@ ${insight?.dataPoints?.slice(0, 2).join('\n') || ''}
 ${divSummary ? `- ${divSummary}` : ''}
 ${tokenContext ? `- ${tokenContext}` : ''}
 
-Line 1 (Hook): What everyone believes — immediately challenged. One sentence, maximum tension.
-Line 2 (Insight): What the data actually shows. Be specific. Make it sting.
-Line 3 (Take): The non-obvious read. Don't explain it fully. Let them sit with it.
+Line 1 (OBSERVATION): Name the specific divergence. Token name + what the data shows vs what the crowd believes.
+  Example: "TAO up 12% on narrative. RSI at 71. Latecomers are buying the story, not the setup."
+  NOT: "AI hype is blinding everyone." (too vague, no data)
+
+Line 2 (INTERPRETATION): Why the consensus read is wrong. One concrete reason. Make it sting.
+  Example: "Narrative is strong but price confirmation is absent. That gap is where traps form."
+  NOT: "Story is loud but no one is listening." (metaphor, no meaning)
+
+Line 3 (IMPLICATION): What fades or what to watch if momentum doesn't follow. A conditional or scenario.
+  Example: "If volume doesn't confirm the move in 48h, this unwinds fast."
+  NOT: "Is anyone watching?" (rhetorical question = automatic reject)
+
+CRITICAL: Do NOT end with a question. End with a scenario, a conditional, or a consequence.
 
 Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
 
@@ -636,6 +651,86 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
   return result;
 }
 
+// ─── Depth layer validator ─────────────────────────────────────────────────────
+//
+// Enforces the 3-layer content standard:
+//   Layer 1: OBSERVATION  — something specific is happening (token, price, data)
+//   Layer 2: INTERPRETATION — what it means (not just what it looks like)
+//   Layer 3: IMPLICATION   — what to watch, what happens next, a conditional
+//
+// A tweet that is only observation (no interpretation or implication) fails.
+// A tweet that ends with a rhetorical question fails.
+// A tweet with only abstract metaphors and no data fails.
+
+const DEPTH_OBSERVATION_PATTERNS = [
+  /\b[A-Z]{2,6}\b.*\b(at|above|below|near|testing|holding|breaking|down|up)\b/,  // "TAO at 420"
+  /\b(RSI|MACD|volume|price|momentum|structure|breakout|breakdown)\b/i,
+  /\b(\d+(\.\d+)?%)\b/,                                                            // percentage
+  /\$\d+(\.\d+)?[kKmM]?/,                                                          // price like $420
+  /\b(narrative|sector|sentiment|rotation|divergence|decoupling)\b/i,
+];
+
+const DEPTH_INTERPRETATION_PATTERNS = [
+  /\b(that('s| is)|this (is|means|shows|signals|confirms|suggests))\b/i,
+  /\b(where (traps?|longs?|shorts?|traders?|latecomers?) (form|get|are|get))\b/i,
+  /\b(gap|divergence|disconnect|mismatch)\b.*\b(where|is)\b/i,
+  /\b(means|implies|signals?|suggests?|confirms?|indicates?)\b/i,
+  /\b(buyers?|sellers?|longs?|shorts?|traders?|market)\b.*\b(trapped|caught|squeezed|positioned)\b/i,
+  /\b(consensus|crowd|everyone|narrative)\b.*\b(wrong|missing|ahead|behind|late)\b/i,
+  /\b(not (confirming|following|backing|supporting))\b/i,
+];
+
+const DEPTH_IMPLICATION_PATTERNS = [
+  /\b(if (it|this|price|momentum|volume|narrative) (holds?|breaks?|fails?|fades?|follows?|confirms?|doesn't))\b/i,
+  /\b(watch (for|if|this)|eyes on|next (level|test|move|leg))\b/i,
+  /\b(fades? (fast|quickly|soon)|unwinds?|reverses?|stalls?|accelerates?)\b/i,
+  /\b(in \d+ (hours?|days?|weeks?)|by (Monday|Friday|end of week|close))\b/i,
+  /\b(target|invalidat|stop|entry|confirm(ation)?)\b/i,
+  /\b(likely to|will (fade|hold|break|reverse)|could (accelerate|stall|confirm))\b/i,
+];
+
+const RHETORICAL_QUESTION_PATTERNS = [
+  /\?\s*$/m,                                                  // ends line with ?
+  /\b(is anyone|does anyone|who('s| is)|but is|but are)\b/i, // unanswered questions
+  /\b(or (is it|are they|will it))\?/i,
+];
+
+function validateDepthLayers(text) {
+  if (!text || text.trim().length < 10) {
+    return { pass: false, reason: 'Tweet is empty.' };
+  }
+
+  const hasObservation    = DEPTH_OBSERVATION_PATTERNS.some(p => p.test(text));
+  const hasInterpretation = DEPTH_INTERPRETATION_PATTERNS.some(p => p.test(text));
+  const hasImplication    = DEPTH_IMPLICATION_PATTERNS.some(p => p.test(text));
+  const hasRhetoricalQ    = RHETORICAL_QUESTION_PATTERNS.some(p => p.test(text));
+
+  // Rhetorical question as final line = automatic reject
+  if (hasRhetoricalQ) {
+    return {
+      pass: false,
+      reason: 'Ends with a rhetorical question. Replace with a conditional scenario or implication (e.g., "If momentum doesn\'t follow, this fades fast.").',
+    };
+  }
+
+  // Must have observation + at least one of (interpretation or implication)
+  const forwardLook = hasInterpretation || hasImplication;
+  if (!hasObservation) {
+    return {
+      pass: false,
+      reason: 'Missing OBSERVATION layer: add a specific token name, price level, RSI value, or percentage move.',
+    };
+  }
+  if (!forwardLook) {
+    return {
+      pass: false,
+      reason: 'Missing forward-looking layer: add INTERPRETATION (what it means) or IMPLICATION (what happens if this continues or fails).',
+    };
+  }
+
+  return { pass: true, reason: null };
+}
+
 // ─── Helper de llamada a GPT ───────────────────────────────────────────────────
 
 async function callGPT(userPrompt, tweetType) {
@@ -701,6 +796,15 @@ async function callGPT(userPrompt, tweetType) {
 
     if (text.length > MAX_CHAR) {
       log.warn(`Tweet demasiado largo en intento ${attempt}: ${text.length} chars > ${MAX_CHAR}. Regenerando...`);
+      continue;
+    }
+
+    // ── Depth layer validation (Observation + Interpretation + Implication) ──
+    const depthResult = validateDepthLayers(text);
+    if (!depthResult.pass && attempt < MAX_REGEN_ATTEMPTS) {
+      log.warn(`DepthLayer FAIL (attempt ${attempt}): ${depthResult.reason?.substring(0, 100)}`);
+      // Inject the failure reason as extra context for the next attempt
+      userPrompt = userPrompt + `\n\nPREVIOUS ATTEMPT REJECTED: ${depthResult.reason} Fix this.`;
       continue;
     }
 
