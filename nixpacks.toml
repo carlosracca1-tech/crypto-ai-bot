@@ -1,0 +1,21 @@
+[phases.setup]
+nixPkgs = [
+  "cairo",
+  "pango",
+  "libjpeg",
+  "giflib",
+  "librsvg",
+  "pkg-config",
+  "python3",
+  "gcc",
+  "gnumake",
+  "fontconfig",
+  "freetype",
+  "pixman",
+]
+
+[phases.install]
+cmds = ["npm_config_build_from_source=true npm ci"]
+
+[variables]
+npm_config_build_from_source = "true"
