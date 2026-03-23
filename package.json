@@ -1,7 +1,7 @@
 {
   "name": "crypto-ai-bot",
-  "version": "1.0.0",
-  "description": "Autonomous AI crypto analysis and Twitter posting bot",
+  "version": "2.0.0",
+  "description": "Autonomous AI crypto analysis, posting, engagement and growth bot",
   "main": "src/pipeline.js",
   "type": "commonjs",
   "scripts": {
@@ -13,13 +13,18 @@
     "pipeline:morning": "node src/pipeline.js --force --type=market_insight",
     "pipeline:afternoon": "node src/pipeline.js --force --type=technical_analysis",
     "pipeline:evening": "node src/pipeline.js --force --type=narrative_insight",
+    "pipeline:fundamental": "node src/pipeline.js --force --type=fundamental_insight",
+    "pipeline:contrarian": "node src/pipeline.js --force --type=contrarian",
     "dry-run": "node scripts/dryRun.js",
     "review": "node scripts/reviewTweets.js",
     "test-market": "node scripts/testMarket.js",
     "test-narrative": "node scripts/testNarrative.js",
     "test:oauth1": "node scripts/testMediaUpload.js",
     "engagement": "node scripts/runEngagement.js",
-    "engagement:dry": "DRY_RUN=true node scripts/runEngagement.js"
+    "engagement:dry": "DRY_RUN=true node scripts/runEngagement.js",
+    "follow": "node scripts/runFollow.js",
+    "follow:dry": "DRY_RUN=true node scripts/runFollow.js",
+    "health": "node scripts/runHealthCheck.js"
   },
   "dependencies": {
     "axios": "^1.6.8",
@@ -29,6 +34,7 @@
     "dotenv": "^16.4.5",
     "fs-extra": "^11.2.0",
     "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.13",
     "openai": "^4.47.1",
     "technicalindicators": "^3.1.0",
     "twitter-api-v2": "^1.17.2",

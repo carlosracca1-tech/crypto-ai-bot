@@ -123,6 +123,20 @@ const config = {
     retryDelayMs: parseInt(process.env.RETRY_DELAY_MS || '2000', 10),
     backoffMultiplier: 2,
   },
+
+  // ─── Alertas / Email ───────────────────────────────────────────────────────
+  alerts: {
+    // Destinatario de alertas (errores + health check)
+    email: process.env.ALERT_EMAIL || 'carlosracca1@gmail.com',
+    // SendGrid: SENDGRID_API_KEY
+    // Gmail SMTP: SMTP_USER + SMTP_PASS (usar App Password)
+    // Sin config → emails guardados en data/email_log.json solamente
+    sendgridKey: process.env.SENDGRID_API_KEY || null,
+    smtpHost:    process.env.SMTP_HOST    || 'smtp.gmail.com',
+    smtpPort:    parseInt(process.env.SMTP_PORT || '587', 10),
+    smtpUser:    process.env.SMTP_USER    || null,
+    smtpPass:    process.env.SMTP_PASS    || null,
+  },
 };
 
 // Validación de variables críticas

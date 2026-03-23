@@ -17,12 +17,13 @@ function getOpenAI() {
 // ─── Tipos de contenido ────────────────────────────────────────────────────────
 
 const TWEET_TYPES = {
-  MARKET_INSIGHT: 'market_insight',
-  TECHNICAL_ANALYSIS: 'technical_analysis',
-  NARRATIVE_INSIGHT: 'narrative_insight',
-  CONTRARIAN: 'contrarian',
-  SYSTEM_THINKING: 'system_thinking',
-  DIVERGENCE: 'divergence',
+  MARKET_INSIGHT:      'market_insight',
+  TECHNICAL_ANALYSIS:  'technical_analysis',
+  NARRATIVE_INSIGHT:   'narrative_insight',
+  CONTRARIAN:          'contrarian',
+  SYSTEM_THINKING:     'system_thinking',
+  DIVERGENCE:          'divergence',
+  FUNDAMENTAL_INSIGHT: 'fundamental_insight',
 };
 
 // ─── System prompt base ────────────────────────────────────────────────────────
@@ -419,11 +420,15 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
   // ─── Modo single-tweet: genera exactamente 1 tweet del tipo pedido ───────────
   if (targetType) {
     const generatorMap = {
-      [TWEET_TYPES.MARKET_INSIGHT]:    generateMarketInsightTweet,
-      [TWEET_TYPES.TECHNICAL_ANALYSIS]: generateTechnicalTweet,
-      [TWEET_TYPES.NARRATIVE_INSIGHT]:  generateNarrativeTweet,
-      [TWEET_TYPES.CONTRARIAN]:         generateContrarianTweet,
-      [TWEET_TYPES.SYSTEM_THINKING]:    generateSystemTweet,
+      [TWEET_TYPES.MARKET_INSIGHT]:      generateMarketInsightTweet,
+      [TWEET_TYPES.TECHNICAL_ANALYSIS]:  generateTechnicalTweet,
+      [TWEET_TYPES.NARRATIVE_INSIGHT]:   generateNarrativeTweet,
+      [TWEET_TYPES.CONTRARIAN]:          generateContrarianTweet,
+      [TWEET_TYPES.SYSTEM_THINKING]:     generateSystemTweet,
+      [TWEET_TYPES.FUNDAMENTAL_INSIGHT]: async (fd) => {
+        const { generateFundamentalTweet } = require('../fundamental/fundamentalAnalysis');
+        return generateFundamentalTweet(fd);
+      },
     };
     const generator = generatorMap[targetType];
     if (!generator) throw new Error(`Tipo de tweet desconocido: ${targetType}`);
@@ -567,5 +572,6 @@ module.exports = {
   generateContrarianTweet,
   generateSystemTweet,
   generateThread,
+  TWEET_TYPES,
   TWEET_TYPES,
 };

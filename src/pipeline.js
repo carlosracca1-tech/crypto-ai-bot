@@ -36,6 +36,10 @@ const {
 // Twitter
 const { postThread, publishTweetsImmediate } = require('./twitter/twitterClient');
 
+// Quality + Alerts
+const { qualityGate }    = require('./quality/contentQuality');
+const { sendErrorAlert } = require('./alerts/emailAlerts');
+
 const log = createModuleLogger('Pipeline');
 
 // ─── Pipeline principal ────────────────────────────────────────────────────────
@@ -69,6 +73,7 @@ async function runPipeline(opts = {}) {
     for (const w of warnings) log.warn(w);
   } catch (err) {
     log.error(`Configuración inválida: ${err.message}`);
+    setImmediate(() => sendErrorAlert({ module: 'Pipeline:validateConfig', error: err.message, stack: err.stack, context: { runId } }).catch(() => {}));
     throw err;
   }
 
@@ -256,6 +261,31 @@ async function runPipeline(opts = {}) {
     pipelineStages.posting = { status: 'skipped_no_credentials' };
   } else {
     try {
+      // ── Quality gate: evaluar y mejorar tweets antes de publicar ─────────
+      log.info('Ejecutando quality gate en tweets generados...');
+      for (const tweet of generatedContent.tweets) {
+        if (tweet.posted || !tweet.content) continue;
+        try {
+          const generator = () => {
+            // Re-importar generator para el tipo correcto (regeneración con hint)
+            const { generateMarketInsightTweet, generateTechnicalTweet, generateNarrativeTweet,
+                    generateContrarianTweet, generateSystemTweet, TWEET_TYPES } = require('./content/contentGenerator');
+            const map = {
+              [TWEET_TYPES.MARKET_INSIGHT]: generateMarketInsightTweet,
+              [TWEET_TYPES.TECHNICAL_ANALYSIS]: generateTechnicalTweet,
+              [TWEET_TYPES.NARRATIVE_INSIGHT]: generateNarrativeTweet,
+              [TWEET_TYPES.CONTRARIAN]: generateContrarianTweet,
+              [TWEET_TYPES.SYSTEM_THINKING]: generateSystemTweet,
+            };
+            const fn = map[tweet.type];
+            return fn ? fn(fusionData) : null;
+          };
+          tweet.content = await qualityGate(tweet.content, tweet.type, generator);
+        } catch (qErr) {
+          log.warn(`Quality gate error for ${tweet.type}: ${qErr.message} — using original`);
+        }
+      }
+
       // Publicar tweets individuales
       publishResults = await publishTweetsImmediate(generatedContent.tweets, fusionData);
 
