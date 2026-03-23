@@ -40,6 +40,15 @@ const { postThread, publishTweetsImmediate } = require('./twitter/twitterClient'
 const { qualityGate }    = require('./quality/contentQuality');
 const { sendErrorAlert } = require('./alerts/emailAlerts');
 
+// ─── Adaptive systems (non-blocking — fallback gracefully) ────────────────────
+let runFeedbackLoop      = async () => ({});
+let runPerformanceEngine = async () => null;
+let getCallbackTweet     = async () => null;
+
+try { runFeedbackLoop      = require('./performance/feedbackLoop').runFeedbackLoop;           } catch (e) {}
+try { runPerformanceEngine = require('./performance/performanceEngine').runPerformanceEngine;  } catch (e) {}
+try { getCallbackTweet     = require('./context/callbackEngine').getCallbackTweet;             } catch (e) {}
+
 const log = createModuleLogger('Pipeline');
 
 // ─── Pipeline principal ────────────────────────────────────────────────────────
@@ -204,6 +213,33 @@ async function runPipeline(opts = {}) {
   }
 
   // ════════════════════════════════════════════════════════════════════
+  // FEEDBACK LOOP: Adaptive strategy update (before content generation)
+  // ════════════════════════════════════════════════════════════════════
+  log.info('\n── FEEDBACK LOOP: ESTRATEGIA ADAPTATIVA ─────────────────');
+  try {
+    const fbResult = await runFeedbackLoop();
+    if (fbResult?.strategy) {
+      log.info(`Strategy: ${fbResult.strategy.reason}`);
+      log.info(`Preferred types: ${fbResult.strategy.preferred_types?.join(', ')}`);
+      log.info(`Focus tokens: ${fbResult.strategy.focus_tokens?.join(', ')}`);
+    }
+  } catch (fbErr) {
+    log.warn(`Feedback loop (non-fatal): ${fbErr.message}`);
+  }
+
+  // ── Callback tweet injection (at least 1 callback/day) ───────────────────
+  let callbackTweet = null;
+  try {
+    callbackTweet = await getCallbackTweet(fusionData);
+    if (callbackTweet) {
+      log.info(`Callback tweet ready: "${callbackTweet.substring(0, 60)}..."`);
+      fusionData._callbackTweet = callbackTweet; // pass to contentGenerator
+    }
+  } catch (cbErr) {
+    log.warn(`Callback engine (non-fatal): ${cbErr.message}`);
+  }
+
+  // ════════════════════════════════════════════════════════════════════
   // ETAPA 5: Generación de contenido
   // ════════════════════════════════════════════════════════════════════
   log.info('\n── ETAPA 5: GENERACIÓN DE CONTENIDO ──────────────────────');
@@ -215,6 +251,22 @@ async function runPipeline(opts = {}) {
   let generatedContent;
   try {
     generatedContent = await generateDailyContent(fusionData, includeThread, tweetType);
+
+    // Inject callback tweet as an extra tweet slot if available
+    if (fusionData._callbackTweet && !tweetType) {
+      generatedContent.tweets.push({
+        id:          `tweet_${Date.now()}_callback`,
+        type:        'callback',
+        content:     fusionData._callbackTweet,
+        charCount:   fusionData._callbackTweet.length,
+        scheduledFor: null,
+        posted:      false,
+        postId:      null,
+        generatedAt: new Date().toISOString(),
+      });
+      log.info('Callback tweet injected into daily content');
+    }
+
     await saveTweets(generatedContent);
 
     pipelineStages.content = {
@@ -303,6 +355,19 @@ async function runPipeline(opts = {}) {
         failed: publishResults.filter(r => r.success === false).length,
       };
       log.info(`ETAPA 6 completada: ${pipelineStages.posting.published} publicados`);
+
+      // ── Delayed performance fetch (non-blocking) ────────────────────────
+      // Fetch metrics 15 minutes after publishing to allow engagement to accumulate
+      if (!dryRun && publishResults.length > 0) {
+        setTimeout(async () => {
+          try {
+            log.info('Running delayed performance fetch (15min after publish)...');
+            await runPerformanceEngine();
+          } catch (perfErr) {
+            log.warn(`Performance fetch error: ${perfErr.message}`);
+          }
+        }, 15 * 60 * 1000); // 15 minutes
+      }
     } catch (err) {
       log.error(`ETAPA 6 ERROR: ${err.message}`);
       pipelineStages.posting = { status: 'partial_failure', error: err.message };

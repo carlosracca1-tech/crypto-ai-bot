@@ -6,6 +6,43 @@ const { createModuleLogger } = require('../utils/logger');
 const { withRetry } = require('../utils/retry');
 const { formatPrice, formatPct, formatVolume, todayISO } = require('../utils/helpers');
 
+// ─── Adaptive systems ─────────────────────────────────────────────────────────
+// Loaded with try/catch so the bot keeps running even if these modules fail
+let _getCurrentStrategy   = () => ({ preferred_types: [], tone: '', focus_tokens: [], hook_style: 'tension', structure: 'standard' });
+let _buildInjection       = () => '';
+let _getLatestHint        = () => null;
+let _selectHookHint       = () => '';
+let _getStructureInst     = () => '';
+let _diversityCheck       = () => ({ ok: true });
+let _applyDiversityRules  = (t) => t;
+let _trackTweet           = () => {};
+let _loadRecentCache      = () => [];
+
+try {
+  const fl = require('../performance/feedbackLoop');
+  _getCurrentStrategy = fl.getCurrentStrategy;
+} catch (e) { /* feedbackLoop not yet available */ }
+
+try {
+  const po = require('../performance/promptOptimizer');
+  _buildInjection = po.buildInjectionForPrompt;
+} catch (e) { /* promptOptimizer not yet available */ }
+
+try {
+  const la = require('../performance/liveAdjuster');
+  _getLatestHint = la.getLatestHintForType;
+} catch (e) { /* liveAdjuster not yet available */ }
+
+try {
+  const vp = require('./viralPatterns');
+  _selectHookHint      = vp.selectHookHint;
+  _getStructureInst    = vp.getStructureInstruction;
+  _diversityCheck      = vp.diversityCheck;
+  _applyDiversityRules = vp.applyDiversityRules;
+  _trackTweet          = vp.trackTweetForDiversity;
+  _loadRecentCache     = vp.loadRecentTweetCache;
+} catch (e) { /* viralPatterns not yet available */ }
+
 const log = createModuleLogger('ContentGenerator');
 
 let _openai = null;
@@ -456,18 +493,47 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
   }
 
   // ─── Modo normal: genera todos los tweets del día ────────────────────────────
-  const tweetTypes = [
-    { type: TWEET_TYPES.MARKET_INSIGHT,    generator: generateMarketInsightTweet },
-    { type: TWEET_TYPES.TECHNICAL_ANALYSIS, generator: generateTechnicalTweet },
-    { type: TWEET_TYPES.NARRATIVE_INSIGHT,  generator: generateNarrativeTweet },
+
+  // Load strategy to prioritize preferred types
+  const dailyStrategy = _getCurrentStrategy();
+  const preferred     = dailyStrategy.preferred_types || [];
+  const avoid         = dailyStrategy.avoid_types || [];
+
+  const generatorMap = {
+    [TWEET_TYPES.MARKET_INSIGHT]:      { type: TWEET_TYPES.MARKET_INSIGHT,      generator: generateMarketInsightTweet },
+    [TWEET_TYPES.TECHNICAL_ANALYSIS]:  { type: TWEET_TYPES.TECHNICAL_ANALYSIS,  generator: generateTechnicalTweet     },
+    [TWEET_TYPES.NARRATIVE_INSIGHT]:   { type: TWEET_TYPES.NARRATIVE_INSIGHT,   generator: generateNarrativeTweet     },
+    [TWEET_TYPES.CONTRARIAN]:          { type: TWEET_TYPES.CONTRARIAN,          generator: generateContrarianTweet    },
+    [TWEET_TYPES.SYSTEM_THINKING]:     { type: TWEET_TYPES.SYSTEM_THINKING,     generator: generateSystemTweet        },
+    [TWEET_TYPES.FUNDAMENTAL_INSIGHT]: {
+      type: TWEET_TYPES.FUNDAMENTAL_INSIGHT,
+      generator: async (fd) => {
+        const { generateFundamentalTweet } = require('../fundamental/fundamentalAnalysis');
+        return generateFundamentalTweet(fd);
+      },
+    },
+  };
+
+  // Build base tweet type list, putting strategy-preferred types first
+  let baseTypes = [
+    TWEET_TYPES.MARKET_INSIGHT,
+    TWEET_TYPES.TECHNICAL_ANALYSIS,
+    TWEET_TYPES.NARRATIVE_INSIGHT,
   ];
 
-  // Agregar contrarian o system thinking aleatoriamente
-  if (Math.random() > 0.5) {
-    tweetTypes.push({ type: TWEET_TYPES.CONTRARIAN,     generator: generateContrarianTweet });
-  } else {
-    tweetTypes.push({ type: TWEET_TYPES.SYSTEM_THINKING, generator: generateSystemTweet });
-  }
+  // Add 4th slot: preferred type if available, otherwise random contrarian/system
+  const optional4th = preferred.find(t => !baseTypes.includes(t) && !avoid.includes(t) && generatorMap[t])
+    || (Math.random() > 0.5 ? TWEET_TYPES.CONTRARIAN : TWEET_TYPES.SYSTEM_THINKING);
+  baseTypes.push(optional4th);
+
+  // Apply diversity rules to avoid repeating types from recent days
+  const recentCache = _loadRecentCache();
+  baseTypes = _applyDiversityRules(baseTypes, recentCache);
+
+  const tweetTypes = baseTypes
+    .filter(t => !avoid.includes(t))
+    .map(t => generatorMap[t])
+    .filter(Boolean);
 
   const tweets = [];
 
@@ -525,10 +591,35 @@ async function callGPT(userPrompt, tweetType) {
   const MAX_CHAR = 278;
   const MAX_REGEN_ATTEMPTS = 3;
 
+  // ── Load adaptive injections ──────────────────────────────────────────────
+  const strategy        = _getCurrentStrategy();
+  const perfInjection   = _buildInjection(tweetType);
+  const liveHint        = _getLatestHint(tweetType);
+  const hookHint        = _selectHookHint(tweetType, null, strategy);
+  const structureInst   = _getStructureInst(strategy.structure || 'standard');
+
+  // Build the adaptive prefix to inject into the user prompt
+  const adaptiveParts = [perfInjection, hookHint, structureInst];
+  if (strategy.tone) {
+    adaptiveParts.push(`TONE FOR THIS TWEET: ${strategy.tone}`);
+  }
+  if (strategy.focus_tokens?.length) {
+    adaptiveParts.push(`PREFERRED TOKENS (if data supports it): ${strategy.focus_tokens.slice(0, 3).join(', ')}`);
+  }
+  if (liveHint) {
+    adaptiveParts.push(`LIVE ADJUSTER HINT (from recent underperformance): ${liveHint}`);
+  }
+
+  const adaptivePrefix = adaptiveParts.filter(Boolean).join('\n');
+
   for (let attempt = 1; attempt <= MAX_REGEN_ATTEMPTS; attempt++) {
     const extraInstruction = attempt > 1
       ? `\n\nCRITICAL: Your previous response was too long. This time you MUST write UNDER ${MAX_CHAR} characters total (including line breaks). Count every character carefully before responding.`
       : '';
+
+    const fullPrompt = adaptivePrefix
+      ? `${adaptivePrefix}\n\n--- PROMPT ---\n${userPrompt}${extraInstruction}`
+      : userPrompt + extraInstruction;
 
     const response = await withRetry(
       async () => {
@@ -537,7 +628,7 @@ async function callGPT(userPrompt, tweetType) {
           model: config.openai.model,
           messages: [
             { role: 'system', content: BASE_SYSTEM_PROMPT },
-            { role: 'user', content: userPrompt + extraInstruction },
+            { role: 'user', content: fullPrompt },
           ],
           temperature: attempt > 1 ? 0.4 : 0.65,
           max_tokens: 300,
@@ -554,6 +645,16 @@ async function callGPT(userPrompt, tweetType) {
       if (attempt > 1) {
         log.info(`Tweet regenerado OK en intento ${attempt} (${text.length} chars)`);
       }
+      // ── Diversity check before accepting ────────────────────────────────
+      const recentCache   = _loadRecentCache();
+      const recentTexts   = recentCache.map(c => c.content);
+      const divResult     = _diversityCheck(text, recentTexts);
+      if (!divResult.ok && attempt < MAX_REGEN_ATTEMPTS) {
+        log.warn(`Diversity check failed: ${divResult.reason} — regenerating`);
+        continue; // force regeneration with slightly higher temperature next round
+      }
+      // Track this tweet for future diversity checks
+      _trackTweet(text, tweetType);
       return text;
     }
 

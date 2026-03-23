@@ -262,4 +262,105 @@ function guessCause(errorMsg, moduleName) {
   return null;
 }
 
-module.exports = { sendEmail, sendErrorAlert, sendHealthReport };
+// ─── Daily Growth Intelligence Report ────────────────────────────────────────
+
+/**
+ * Analytical daily report: what worked, what failed, what changes.
+ */
+async function sendGrowthIntelligenceReport(reportData = {}) {
+  const { patterns = {}, strategy = {}, liveAdjusterStats = {}, date = new Date().toISOString().split('T')[0] } = reportData;
+
+  const subject  = `Daily Growth Intelligence — ${date}`;
+  const bestType = patterns.best_type || 'N/A';
+  const worstType = patterns.worst_type || 'N/A';
+
+  const bestTweet  = patterns.best_tweet;
+  const worstTweet = patterns.worst_tweet;
+
+  const typeScores = Object.entries(patterns.by_type || {})
+    .sort(([, a], [, b]) => b.avg_score - a.avg_score)
+    .map(([type, d]) => `<div class="kv"><span class="key">${type}</span><span class="val ${d.avg_score > (patterns.avg_score || 0) ? 'ok' : 'warn'}">${d.avg_score.toFixed(1)} (n=${d.count})</span></div>`)
+    .join('');
+
+  const recommendation = patterns.trend === 'improving'
+    ? 'System improving — maintain current strategy.'
+    : patterns.trend === 'degrading'
+    ? 'Engagement declining — increase contrarian/provocative content ratio.'
+    : 'Performance stable — run prompt optimizer for incremental gains.';
+
+  const html = htmlWrap(`Daily Growth Intelligence — ${date}`, `
+    <div class="section">
+      <h2>📊 ENGAGEMENT SUMMARY</h2>
+      <div class="kv"><span class="key">Total tweets tracked</span><span class="val">${patterns.total_tweets || 0}</span></div>
+      <div class="kv"><span class="key">Overall avg score</span><span class="val">${(patterns.avg_score || 0).toFixed(1)}</span></div>
+      <div class="kv"><span class="key">Trend</span><span class="val ${patterns.trend === 'improving' ? 'ok' : patterns.trend === 'degrading' ? 'err' : 'warn'}">${patterns.trend || 'unknown'}</span></div>
+    </div>
+    <div class="section">
+      <h2>✅ WHAT IS WORKING</h2>
+      <div class="kv"><span class="key">Best type</span><span class="val ok">${bestType} (${patterns.by_type?.[bestType]?.avg_score?.toFixed(1) || '?'})</span></div>
+      <div class="kv"><span class="key">Best time window</span><span class="val ok">${patterns.best_time_window || 'N/A'}</span></div>
+      <div class="kv"><span class="key">Top tokens</span><span class="val ok">${(patterns.top_tokens || []).join(', ') || 'N/A'}</span></div>
+      ${bestTweet ? `<div class="kv"><span class="key">Best tweet (score ${bestTweet.metrics?.engagement_score?.toFixed(1)})</span><span class="val" style="font-size:11px">"${(bestTweet.content || '').substring(0, 150)}"</span></div>` : ''}
+    </div>
+    <div class="section">
+      <h2>❌ WHAT IS FAILING</h2>
+      <div class="kv"><span class="key">Worst type</span><span class="val err">${worstType} (${patterns.by_type?.[worstType]?.avg_score?.toFixed(1) || '?'})</span></div>
+      ${worstTweet ? `<div class="kv"><span class="key">Worst tweet (score ${worstTweet.metrics?.engagement_score?.toFixed(1)})</span><span class="val err" style="font-size:11px">"${(worstTweet.content || '').substring(0, 150)}"</span></div>` : ''}
+    </div>
+    <div class="section">
+      <h2>🔄 WHAT WE CHANGED TODAY</h2>
+      <div class="kv"><span class="key">Reason</span><span class="val">${strategy.reason || 'No changes'}</span></div>
+      <div class="kv"><span class="key">Preferred types</span><span class="val ok">${(strategy.preferred_types || []).join(', ') || 'default'}</span></div>
+      <div class="kv"><span class="key">Tone</span><span class="val">${strategy.tone || 'default'}</span></div>
+      <div class="kv"><span class="key">Focus tokens</span><span class="val ok">${(strategy.focus_tokens || []).join(', ') || 'default'}</span></div>
+      ${liveAdjusterStats.followups > 0 ? `<div class="kv"><span class="key">Follow-up tweets sent</span><span class="val ok">${liveAdjusterStats.followups}</span></div>` : ''}
+    </div>
+    <div class="section">
+      <h2>📈 ALL TYPES BY SCORE</h2>
+      ${typeScores || '<div class="kv"><span class="key">No data yet</span></div>'}
+    </div>
+    <div class="section">
+      <h2>🔮 WHAT CHANGES TOMORROW</h2>
+      <p style="color:#e0e0e0">${recommendation}</p>
+    </div>
+  `, '#6c63ff');
+
+  return sendEmail(subject, html);
+}
+
+/**
+ * Performance degradation alert — triggered when engagement drops >30% vs prior period.
+ */
+async function sendPerformanceDegradationAlert({ today_avg, yesterday_avg, suspected_cause, top_failures = [] } = {}) {
+  const drop    = yesterday_avg > 0 ? ((today_avg - yesterday_avg) / yesterday_avg * 100).toFixed(1) : '?';
+  const subject = `⚠️ Performance Degradation — ${new Date().toISOString().split('T')[0]}`;
+
+  const failuresHtml = top_failures
+    .map(f => `<div class="kv"><span class="key">${f.type || '?'}</span><span class="val err">score: ${f.score?.toFixed(1) || '?'}</span></div>`)
+    .join('');
+
+  const html = htmlWrap('Performance Degradation Detected', `
+    <div class="section">
+      <h2>📉 Engagement Drop</h2>
+      <div class="kv"><span class="key">Today avg</span><span class="val err">${(today_avg || 0).toFixed(1)}</span></div>
+      <div class="kv"><span class="key">Yesterday avg</span><span class="val">${(yesterday_avg || 0).toFixed(1)}</span></div>
+      <div class="kv"><span class="key">Change</span><span class="val err">${drop}%</span></div>
+    </div>
+    ${failuresHtml ? `<div class="section"><h2>Worst Performers</h2>${failuresHtml}</div>` : ''}
+    <div class="section">
+      <h2>Suspected Cause</h2>
+      <p>${suspected_cause || 'No specific cause identified. Check content quality and posting times.'}</p>
+      <p>Actions: increase contrarian content | run prompt optimizer | verify API health.</p>
+    </div>
+  `, '#ffd43b');
+
+  return sendEmail(subject, html);
+}
+
+module.exports = {
+  sendEmail,
+  sendErrorAlert,
+  sendHealthReport,
+  sendGrowthIntelligenceReport,
+  sendPerformanceDegradationAlert,
+};

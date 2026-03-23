@@ -9,9 +9,18 @@
 
 const fs   = require('fs');
 const path = require('path');
-const { createModuleLogger } = require('../utils/logger');
-const { sendHealthReport }   = require('./emailAlerts');
-const { getErrorStats }      = require('./errorMonitor');
+const { createModuleLogger }            = require('../utils/logger');
+const { sendHealthReport, sendGrowthIntelligenceReport, sendPerformanceDegradationAlert } = require('./emailAlerts');
+const { getErrorStats }                 = require('./errorMonitor');
+
+// Adaptive systems — loaded gracefully
+let getLatestPatterns  = () => ({});
+let getCurrentStrategy = () => ({});
+let getAdjustmentHistory = () => [];
+
+try { getLatestPatterns    = require('../performance/performanceEngine').getLatestPatterns;    } catch (e) {}
+try { getCurrentStrategy   = require('../performance/feedbackLoop').getCurrentStrategy;        } catch (e) {}
+try { getAdjustmentHistory = require('../performance/feedbackLoop').getAdjustmentHistory;      } catch (e) {}
 
 const log = createModuleLogger('HealthCheck');
 
@@ -126,6 +135,47 @@ async function runDailyHealthCheck() {
   log.info(`Health check: status=${status} | tweets=${stats.tweetsPosted}/${stats.tweetsScheduled} | replies=${stats.repliesPosted} | follows=${stats.followsToday} | errors=${stats.errorCount}`);
 
   await sendHealthReport(stats);
+
+  // ── Growth Intelligence Report ────────────────────────────────────────────
+  try {
+    const patterns  = getLatestPatterns();
+    const strategy  = getCurrentStrategy();
+    const today_avg = patterns.avg_score || 0;
+
+    // Check for degradation (compare recent 7 entries vs previous 7)
+    const allEntries = (require('../performance/performanceEngine').loadPerformanceLog)?.() || [];
+    const last7      = allEntries.slice(-7).map(e => e.metrics?.engagement_score || 0);
+    const prev7      = allEntries.slice(-14, -7).map(e => e.metrics?.engagement_score || 0);
+    const avgLast    = last7.length  ? last7.reduce((a, b) => a + b, 0)  / last7.length  : 0;
+    const avgPrev    = prev7.length  ? prev7.reduce((a, b) => a + b, 0)  / prev7.length  : 0;
+    const isDegraded = avgPrev > 0 && avgLast < avgPrev * 0.7; // >30% drop
+
+    if (isDegraded) {
+      log.warn(`Performance degradation detected: ${avgLast.toFixed(1)} vs ${avgPrev.toFixed(1)}`);
+      await sendPerformanceDegradationAlert({
+        today_avg:   avgLast,
+        yesterday_avg: avgPrev,
+        suspected_cause: patterns.trend === 'degrading'
+          ? `${patterns.worst_type} content underperforming consistently. Consider diversifying.`
+          : 'Recent drop — may be temporary or API related.',
+        top_failures: Object.entries(patterns.by_type || {})
+          .sort(([, a], [, b]) => a.avg_score - b.avg_score)
+          .slice(0, 3)
+          .map(([type, d]) => ({ type, score: d.avg_score })),
+      });
+    }
+
+    await sendGrowthIntelligenceReport({
+      patterns,
+      strategy,
+      liveAdjusterStats: {},
+      date: todayART(),
+    });
+
+    log.info('Growth intelligence report sent');
+  } catch (growthErr) {
+    log.warn(`Growth report error (non-fatal): ${growthErr.message}`);
+  }
 
   // Reset contador de errores para el día siguiente
   const { resetErrorCount } = require('./errorMonitor');

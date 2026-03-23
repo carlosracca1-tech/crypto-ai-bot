@@ -27,6 +27,15 @@ const { runDailyHealthCheck } = require('../src/alerts/healthCheck');
 const { monitored, installGlobalHandlers } = require('../src/alerts/errorMonitor');
 const { config }              = require('../src/config');
 
+// ─── Adaptive systems ─────────────────────────────────────────────────────────
+let runLiveAdjuster      = async () => {};
+let runPerformanceEngine = async () => {};
+let runPromptOptimizer   = async () => {};
+
+try { runLiveAdjuster      = require('../src/performance/liveAdjuster').runLiveAdjuster;           } catch (e) {}
+try { runPerformanceEngine = require('../src/performance/performanceEngine').runPerformanceEngine;  } catch (e) {}
+try { runPromptOptimizer   = require('../src/performance/promptOptimizer').runPromptOptimizer;      } catch (e) {}
+
 const log = createModuleLogger('Scheduler-AR');
 
 // ─── TWEET WINDOWS (ART) ───────────────────────────────────────────────────────
@@ -283,6 +292,34 @@ function start() {
     log.info('Ejecutando limpieza semanal...');
     await cleanupOldFiles(30);
   }, { scheduled: true, timezone: 'UTC' });
+
+  // ── Live Adjuster: cada 2.5h — detecta virales y ajusta en tiempo real ──────
+  // UTC times for every 2.5h roughly: 01:30, 04:00, 06:30, 09:00, 11:30, 14:00, 16:30, 19:00, 21:30
+  const LIVE_ADJUSTER_CRONS = ['30 1', '0 4', '30 6', '0 9', '30 11', '0 14', '30 16', '0 19', '30 21'];
+  for (const slot of LIVE_ADJUSTER_CRONS) {
+    cron.schedule(`${slot} * * *`, async () => {
+      log.info(`\n⚡ Live Adjuster ejecutando (${slot} UTC)...`);
+      await monitored('LiveAdjuster', () => runLiveAdjuster(), {}, false);
+    }, { scheduled: true, timezone: 'UTC' });
+  }
+  log.info('  ⚡ Live Adjuster: cada ~2.5h');
+
+  // ── Performance Engine: 3 veces al día (mañana, tarde, noche ART) ────────────
+  // 08:00 UTC = 05:00 ART | 15:00 UTC = 12:00 ART | 22:00 UTC = 19:00 ART
+  for (const utcH of [8, 15, 22]) {
+    cron.schedule(`0 ${utcH} * * *`, async () => {
+      log.info(`\n📈 Performance Engine ejecutando (${utcH}:00 UTC)...`);
+      await monitored('PerformanceEngine', () => runPerformanceEngine(), {}, false);
+    }, { scheduled: true, timezone: 'UTC' });
+  }
+  log.info('  📈 Performance Engine: 3×/día (05:00, 12:00, 19:00 ART)');
+
+  // ── Prompt Optimizer: semanal, domingos a las 04:00 UTC ──────────────────────
+  cron.schedule('0 4 * * 0', async () => {
+    log.info('\n🧠 Prompt Optimizer ejecutando...');
+    await monitored('PromptOptimizer', () => runPromptOptimizer(), {}, false);
+  }, { scheduled: true, timezone: 'UTC' });
+  log.info('  🧠 Prompt Optimizer: domingos 04:00 UTC');
 
   // ── --run-now testing flag ──────────────────────────────────────────────────
   if (process.argv.includes('--run-now')) {
