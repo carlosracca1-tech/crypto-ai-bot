@@ -105,6 +105,79 @@ function analyzeVelocity(recentTweets, allEntries) {
   return { overperforming, underperforming, avg_score: avgScore };
 }
 
+// ─── Follow-up quality filter ─────────────────────────────────────────────────
+
+/**
+ * Check whether a follow-up tweet is justified for a given original tweet.
+ *
+ * A follow-up is only valid if at least one of these is true:
+ *   1. LEVEL_CONFIRMED  — original mentioned a price level and price has moved toward it
+ *   2. MOMENTUM_ACCEL   — engagement velocity is still rising (score jumped further)
+ *   3. NARRATIVE_SPIKE  — CT is amplifying the same theme (high retweet/reply ratio)
+ *   4. THESIS_INVALID   — price or data moved against the original thesis (update is needed)
+ *   5. CALLBACK_WORTHY  — original had a clear prediction phrase that can be referenced
+ *
+ * Returns { allowed: boolean, reason: string, trigger: string|null }
+ *
+ * @param {object} tweet - performance log entry with fresh_score + fresh_metrics
+ * @returns {{ allowed: boolean, reason: string, trigger: string|null }}
+ */
+function shouldGenerateFollowUp(tweet) {
+  const content       = tweet.content || '';
+  const freshMetrics  = tweet.fresh_metrics || {};
+  const freshScore    = tweet.fresh_score   || 0;
+  const originalScore = tweet.metrics?.engagement_score || 0;
+
+  // ── Trigger 1: price level mentioned and tweet is gaining momentum ──────────
+  const LEVEL_PATTERN = /\$?([\d,]+(\.\d+)?[kK]?)\s*(support|resistance|level|zone|target)/i;
+  const hasLevel      = LEVEL_PATTERN.test(content);
+
+  // ── Trigger 2: engagement velocity still rising ────────────────────────────
+  const momentumAccel = freshScore > originalScore * 1.5; // 50% more than when first scored
+
+  // ── Trigger 3: narrative spike — RT/reply ratio high ──────────────────────
+  const rtCount   = freshMetrics.retweet_count || 0;
+  const repCount  = freshMetrics.reply_count   || 0;
+  const likeCount = freshMetrics.like_count    || 1;
+  const rtRatio   = rtCount / Math.max(likeCount, 1);
+  const narrativeSpike = rtRatio >= 0.2; // 20%+ retweet rate = amplification signal
+
+  // ── Trigger 4: thesis invalidation phrases ─────────────────────────────────
+  const THESIS_PATTERNS = [
+    /\b(if (it|price|BTC|ETH|SOL|TAO|RNDR|FET) (holds|breaks|loses|reclaims))\b/i,
+    /\b(watch for|next test|invalidated if|key condition)\b/i,
+  ];
+  const hasConditional = THESIS_PATTERNS.some(p => p.test(content));
+
+  // ── Trigger 5: callback-worthy prediction ─────────────────────────────────
+  const CALLBACK_PATTERNS = [
+    /\b(target|next level|watch|if (this|it|price) (holds|breaks))\b/i,
+    /\b(expect|anticipate|likely|setup|positioned)\b/i,
+  ];
+  const callbackWorthy = CALLBACK_PATTERNS.some(p => p.test(content));
+
+  // Evaluate
+  if (momentumAccel) {
+    return { allowed: true, reason: 'Engagement momentum still accelerating', trigger: 'MOMENTUM_ACCEL' };
+  }
+  if (narrativeSpike) {
+    return { allowed: true, reason: `High RT ratio (${(rtRatio * 100).toFixed(0)}%) — narrative amplifying`, trigger: 'NARRATIVE_SPIKE' };
+  }
+  if (hasLevel && hasConditional) {
+    return { allowed: true, reason: 'Tweet mentioned a level with condition — follow-up confirms or updates', trigger: 'LEVEL_CONFIRMED' };
+  }
+  if (callbackWorthy && freshScore > 5) {
+    return { allowed: true, reason: 'Tweet had a prediction phrase and is performing — callback is warranted', trigger: 'CALLBACK_WORTHY' };
+  }
+
+  // No valid trigger found
+  return {
+    allowed: false,
+    reason:  'No new information justifies a follow-up: no level to confirm, no momentum spike, no narrative amplification, no prediction to callback.',
+    trigger: null,
+  };
+}
+
 // ─── Follow-up generation ─────────────────────────────────────────────────────
 
 /**
@@ -254,6 +327,15 @@ async function runLiveAdjuster() {
 
       log.info(`Overperforming tweet detected: ${tweet.tweet_id} (score: ${tweet.fresh_score.toFixed(1)})`);
 
+      // ── Quality filter: only follow up if there's actual new information ──
+      const qualityCheck = shouldGenerateFollowUp(tweet);
+      if (!qualityCheck.allowed) {
+        log.info(`Follow-up skipped for ${tweet.tweet_id}: ${qualityCheck.reason}`);
+        state.followups_sent.push(tweet.tweet_id); // mark to avoid rechecking
+        continue;
+      }
+      log.info(`Follow-up approved (${qualityCheck.trigger}): ${qualityCheck.reason}`);
+
       const followupContent = await generateFollowUp(tweet);
       if (!followupContent) continue;
 
@@ -323,4 +405,5 @@ function getLatestHintForType(tweetType) {
 module.exports = {
   runLiveAdjuster,
   getLatestHintForType,
+  shouldGenerateFollowUp,
 };

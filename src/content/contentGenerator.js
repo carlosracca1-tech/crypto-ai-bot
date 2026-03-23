@@ -18,6 +18,13 @@ let _applyDiversityRules  = (t) => t;
 let _trackTweet           = () => {};
 let _loadRecentCache      = () => [];
 
+// Phase 2 modules
+let _buildDailyMix            = (strategy, slots) => [];
+let _buildNaturalityInst      = () => '';
+let _checkNaturality          = () => ({ pass: true });
+let _signalRelevanceGate      = () => ({ pass: true });
+let _buildSignalInstruction   = () => '';
+
 try {
   const fl = require('../performance/feedbackLoop');
   _getCurrentStrategy = fl.getCurrentStrategy;
@@ -42,6 +49,47 @@ try {
   _trackTweet          = vp.trackTweetForDiversity;
   _loadRecentCache     = vp.loadRecentTweetCache;
 } catch (e) { /* viralPatterns not yet available */ }
+
+try {
+  const cmc = require('./contentMixController');
+  _buildDailyMix = cmc.buildDailyMix;
+} catch (e) { /* contentMixController not yet available */ }
+
+try {
+  const ng = require('./naturalityGuard');
+  _buildNaturalityInst = ng.buildNaturalityInstruction;
+  _checkNaturality     = ng.checkNaturality;
+} catch (e) { /* naturalityGuard not yet available */ }
+
+try {
+  const sr = require('./signalRelevance');
+  _signalRelevanceGate    = sr.signalRelevanceGate;
+  _buildSignalInstruction = sr.buildSignalInstruction;
+} catch (e) { /* signalRelevance not yet available */ }
+
+// ─── Account identity (permanent, loaded once) ────────────────────────────────
+let _identity = null;
+function getIdentity() {
+  if (_identity) return _identity;
+  try {
+    _identity = require('../config/accountIdentity.json');
+  } catch {
+    _identity = {};
+  }
+  return _identity;
+}
+
+function buildIdentityPrefix() {
+  const id = getIdentity();
+  if (!id.forbidden_traits) return '';
+  const forbidden = (id.forbidden_traits || []).slice(0, 6).join(', ');
+  const coreRules = (id.core_rules || []).slice(0, 3).join(' | ');
+  return [
+    `IDENTITY (permanent — never changes): ${id.tone || 'sharp, analytical, slightly contrarian'}`,
+    `FORBIDDEN: ${forbidden}`,
+    `CORE RULES: ${coreRules}`,
+  ].join('\n');
+}
 
 const log = createModuleLogger('ContentGenerator');
 
@@ -494,9 +542,8 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
 
   // ─── Modo normal: genera todos los tweets del día ────────────────────────────
 
-  // Load strategy to prioritize preferred types
+  // Load strategy and build 6-slot mix via contentMixController
   const dailyStrategy = _getCurrentStrategy();
-  const preferred     = dailyStrategy.preferred_types || [];
   const avoid         = dailyStrategy.avoid_types || [];
 
   const generatorMap = {
@@ -514,21 +561,25 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
     },
   };
 
-  // Build base tweet type list, putting strategy-preferred types first
-  let baseTypes = [
-    TWEET_TYPES.MARKET_INSIGHT,
-    TWEET_TYPES.TECHNICAL_ANALYSIS,
-    TWEET_TYPES.NARRATIVE_INSIGHT,
-  ];
+  // ── Use contentMixController for stable 6-slot daily structure ────────────
+  const targetSlots  = config.content.tweetsPerDay || 6;
+  let mixTypes       = _buildDailyMix(dailyStrategy, targetSlots);
 
-  // Add 4th slot: preferred type if available, otherwise random contrarian/system
-  const optional4th = preferred.find(t => !baseTypes.includes(t) && !avoid.includes(t) && generatorMap[t])
-    || (Math.random() > 0.5 ? TWEET_TYPES.CONTRARIAN : TWEET_TYPES.SYSTEM_THINKING);
-  baseTypes.push(optional4th);
+  // Fall back to manual list if contentMixController isn't available yet
+  if (!mixTypes.length) {
+    mixTypes = [
+      TWEET_TYPES.MARKET_INSIGHT,
+      TWEET_TYPES.TECHNICAL_ANALYSIS,
+      TWEET_TYPES.NARRATIVE_INSIGHT,
+      TWEET_TYPES.CONTRARIAN,
+      TWEET_TYPES.FUNDAMENTAL_INSIGHT,
+      TWEET_TYPES.MARKET_INSIGHT,
+    ].slice(0, targetSlots);
+  }
 
   // Apply diversity rules to avoid repeating types from recent days
   const recentCache = _loadRecentCache();
-  baseTypes = _applyDiversityRules(baseTypes, recentCache);
+  const baseTypes   = _applyDiversityRules(mixTypes, recentCache);
 
   const tweetTypes = baseTypes
     .filter(t => !avoid.includes(t))
@@ -598,8 +649,15 @@ async function callGPT(userPrompt, tweetType) {
   const hookHint        = _selectHookHint(tweetType, null, strategy);
   const structureInst   = _getStructureInst(strategy.structure || 'standard');
 
+  // Phase 2 injections
+  const recentCachePhase2 = _loadRecentCache();
+  const recentTextsPhase2 = recentCachePhase2.map(c => c.content);
+  const naturalityInst    = _buildNaturalityInst(recentTextsPhase2, tweetType);
+  const signalInst        = _buildSignalInstruction(tweetType);
+  const identityPrefix    = buildIdentityPrefix();
+
   // Build the adaptive prefix to inject into the user prompt
-  const adaptiveParts = [perfInjection, hookHint, structureInst];
+  const adaptiveParts = [identityPrefix, perfInjection, hookHint, structureInst, naturalityInst, signalInst];
   if (strategy.tone) {
     adaptiveParts.push(`TONE FOR THIS TWEET: ${strategy.tone}`);
   }
@@ -641,27 +699,44 @@ async function callGPT(userPrompt, tweetType) {
     // Limpiar comillas envolventes si las hay
     const text = response.replace(/^["']|["']$/g, '').trim();
 
-    if (text.length <= MAX_CHAR) {
-      if (attempt > 1) {
-        log.info(`Tweet regenerado OK en intento ${attempt} (${text.length} chars)`);
-      }
-      // ── Diversity check before accepting ────────────────────────────────
-      const recentCache   = _loadRecentCache();
-      const recentTexts   = recentCache.map(c => c.content);
-      const divResult     = _diversityCheck(text, recentTexts);
-      if (!divResult.ok && attempt < MAX_REGEN_ATTEMPTS) {
-        log.warn(`Diversity check failed: ${divResult.reason} — regenerating`);
-        continue; // force regeneration with slightly higher temperature next round
-      }
-      // Track this tweet for future diversity checks
-      _trackTweet(text, tweetType);
-      return text;
+    if (text.length > MAX_CHAR) {
+      log.warn(`Tweet demasiado largo en intento ${attempt}: ${text.length} chars > ${MAX_CHAR}. Regenerando...`);
+      continue;
     }
 
-    log.warn(`Tweet demasiado largo en intento ${attempt}: ${text.length} chars > ${MAX_CHAR}. Regenerando...`);
+    // ── Signal relevance gate ────────────────────────────────────────────
+    const signalCheck = _signalRelevanceGate(text, tweetType);
+    if (!signalCheck.pass && attempt < MAX_REGEN_ATTEMPTS) {
+      log.warn(`SignalRelevance FAIL (attempt ${attempt}): regenerating — ${signalCheck.regenerateWith?.substring(0, 80)}`);
+      continue;
+    }
+
+    // ── Naturality check ─────────────────────────────────────────────────
+    const naturalityCheck = _checkNaturality(text, recentTextsPhase2);
+    if (!naturalityCheck.pass && attempt < MAX_REGEN_ATTEMPTS) {
+      log.warn(`NaturalityGuard FAIL (attempt ${attempt}): ${naturalityCheck.reason?.substring(0, 80)}`);
+      continue;
+    }
+
+    if (attempt > 1) {
+      log.info(`Tweet regenerado OK en intento ${attempt} (${text.length} chars)`);
+    }
+
+    // ── Diversity check before accepting ────────────────────────────────
+    const recentCache   = _loadRecentCache();
+    const recentTexts   = recentCache.map(c => c.content);
+    const divResult     = _diversityCheck(text, recentTexts);
+    if (!divResult.ok && attempt < MAX_REGEN_ATTEMPTS) {
+      log.warn(`Diversity check failed: ${divResult.reason} — regenerating`);
+      continue;
+    }
+
+    // Track this tweet for future diversity checks
+    _trackTweet(text, tweetType);
+    return text;
   }
 
-  log.error(`Tweet tipo ${tweetType} superó ${MAX_CHAR} chars en todos los intentos. Descartando.`);
+  log.error(`Tweet tipo ${tweetType} superó todos los intentos. Descartando.`);
   return null;
 }
 

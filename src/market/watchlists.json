@@ -1,0 +1,23 @@
+{
+  "_comment": "Token watchlists for TheProtocoMind. Core = primary coverage. Rotating = exploratory. Breakout = dynamic, populated by performanceEngine and market signals.",
+
+  "core_watchlist": ["TAO", "RNDR", "FET", "AKT", "AGIX", "INJ"],
+  "rotating_watchlist": ["OCEAN", "NEAR", "WLD", "GRT", "AR", "ALT"],
+  "breakout_watchlist": [],
+
+  "rules": {
+    "core": "Gets coverage in every market insight and technical analysis tweet. Always included in fundamental analysis rotation.",
+    "rotating": "Gets 2-3 mentions per week. Rotates based on narrative strength and volume activity.",
+    "breakout": "Populated dynamically when a token shows: volume spike >2x avg, unusual price momentum, or narrative spike in CT. Auto-clears after 72h unless manually retained.",
+    "max_breakout_size": 3
+  },
+
+  "coverage_weights": {
+    "core_watchlist": 0.65,
+    "rotating_watchlist": 0.25,
+    "breakout_watchlist": 0.10
+  },
+
+  "last_updated": "2026-03-23",
+  "breakout_log": []
+}

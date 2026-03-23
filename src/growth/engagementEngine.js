@@ -191,53 +191,113 @@ async function findPriorityTweets(maxPerQuery = 10) {
   return dedup.sort((a, b) => b.priority - a.priority);
 }
 
+// ─── Reply variation ──────────────────────────────────────────────────────────
+
+/**
+ * Three reply modes to ensure natural, non-uniform engagement tone:
+ *   sharp_insight   — adds a specific data point or sharper framing
+ *   short_contrarian — short challenge to an assumption or consensus call
+ *   smart_question  — one targeted question that reveals a gap in reasoning
+ *
+ * Distribution target: ~40% sharp_insight, ~30% contrarian, ~30% question.
+ */
+const REPLY_MODES = ['sharp_insight', 'short_contrarian', 'smart_question'];
+
+/**
+ * Determine which reply mode to use based on recent reply history.
+ * Keeps distribution natural — avoids 3+ consecutive same mode.
+ *
+ * @param {object[]} recentReplies - last N reply log entries (with .reply_mode)
+ * @returns {'sharp_insight' | 'short_contrarian' | 'smart_question'}
+ */
+function selectReplyMode(recentReplies = []) {
+  const last5 = recentReplies.slice(-5).map(r => r.reply_mode).filter(Boolean);
+
+  // Count recent usage
+  const counts = { sharp_insight: 0, short_contrarian: 0, smart_question: 0 };
+  for (const m of last5) {
+    if (counts[m] !== undefined) counts[m]++;
+  }
+
+  // If the last 2 are the same mode, switch
+  if (last5.length >= 2 && last5[last5.length - 1] === last5[last5.length - 2]) {
+    const overused = last5[last5.length - 1];
+    const options  = REPLY_MODES.filter(m => m !== overused);
+    return options[Math.floor(Math.random() * options.length)];
+  }
+
+  // Weight: underused modes get higher chance
+  const weights = REPLY_MODES.map(m => {
+    const base = m === 'sharp_insight' ? 4 : 3;
+    return Math.max(1, base - counts[m]);
+  });
+
+  const total   = weights.reduce((a, b) => a + b, 0);
+  let rand      = Math.random() * total;
+  for (let i = 0; i < REPLY_MODES.length; i++) {
+    rand -= weights[i];
+    if (rand <= 0) return REPLY_MODES[i];
+  }
+  return 'sharp_insight';
+}
+
+const REPLY_MODE_PROMPTS = {
+  sharp_insight: (tweet, marketCtx) => `You are engaging with this crypto tweet:
+
+"${tweet.text}"
+— @${tweet.author_handle}
+${marketCtx ? `Market context: ${marketCtx}` : ''}
+
+Write a SHORT reply (max 180 chars) that adds one specific data point, concrete level, or sharper framing. Do NOT agree generically. Lead with the insight. No emojis. No hashtags.`,
+
+  short_contrarian: (tweet) => `You are engaging with this crypto tweet:
+
+"${tweet.text}"
+— @${tweet.author_handle}
+
+Write a SHORT contrarian reply (max 160 chars) that challenges one assumption or consensus point in this tweet. Be specific — say what's being missed or overstated. No generic "but have you considered". Start with the counter-point. No emojis. No hashtags.`,
+
+  smart_question: (tweet) => `You are engaging with this crypto tweet:
+
+"${tweet.text}"
+— @${tweet.author_handle}
+
+Write ONE pointed question (max 140 chars) that exposes a gap in their reasoning or asks for the thing they left unsaid. Not "what do you think?" — something specific that reveals a missing variable. No emojis. No hashtags.`,
+};
+
 // ─── Reply generation ─────────────────────────────────────────────────────────
 
 /**
- * Generate a high-quality, insight-driven reply.
+ * Generate a high-quality reply in the selected mode.
  * NOT generic — must add data, analysis, or a contrarian angle.
+ *
+ * @param {object} tweet
+ * @param {object|null} fusionData
+ * @param {string} mode - reply mode
+ * @returns {Promise<string|null>}
  */
-async function generateInsightReply(tweet, fusionData = null) {
+async function generateInsightReply(tweet, fusionData = null, mode = 'sharp_insight') {
   const openai = new OpenAI({ apiKey: config.openai.apiKey });
 
   const marketCtx = fusionData?.tokens?.slice(0, 5)
     .map(t => `${t.symbol}: $${t.currentPrice?.toFixed(2)} (${t.change24h >= 0 ? '+' : ''}${t.change24h?.toFixed(1)}%)`)
     .join(', ') || '';
 
-  const prompt = `You are engaging with this crypto tweet on Twitter/X:
-
-"${tweet.text}"
-— @${tweet.author_handle} (${tweet.followers.toLocaleString()} followers, ${tweet.likes} likes)
-
-${marketCtx ? `Current market: ${marketCtx}` : ''}
-
-Write ONE reply that:
-1. Adds genuine value — a data point, an alternative angle, or a sharper framing of what they said
-2. Does NOT agree/disagree generically ("good point", "totally agree", "interesting")
-3. If you have contradicting data or a contrarian view → use it
-4. If you can add a specific level, metric, or timeframe → add it
-5. Is conversational but sharp — you're not lecturing, you're contributing
-
-RULES:
-- Max 200 chars (it's a reply, not a main tweet)
-- No emojis, no hashtags
-- No "Great tweet!" / "Exactly!" type openers
-- Start with the substance, not a greeting
-- Can be a question if it challenges an assumption
-
-Return ONLY the reply text.`;
+  const promptFn = REPLY_MODE_PROMPTS[mode] || REPLY_MODE_PROMPTS.sharp_insight;
+  const prompt   = promptFn(tweet, marketCtx);
 
   try {
     const result = await withRetry(async () => {
       const completion = await openai.chat.completions.create({
         model: config.openai.model,
         messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7,
-        max_tokens: 150,
+        temperature: mode === 'short_contrarian' ? 0.8 : 0.7,
+        max_tokens: 120,
       });
       return completion.choices[0].message.content.trim().replace(/^["']|["']$/g, '');
     }, { label: 'generateReply', retries: 2 });
 
+    log.info(`Reply generated (mode=${mode}): "${result.substring(0, 60)}..."`);
     return result;
   } catch (err) {
     log.error(`Reply generation failed: ${err.message}`);
@@ -253,8 +313,8 @@ Return ONLY the reply text.`;
  * 2. Reply with insight
  * (Optional step 3: second reply if it gains traction — tracked but not auto-executed)
  */
-async function executeSingleEngagement(tweet, fusionData, userClient) {
-  const result = { tweet_id: tweet.id, liked: false, replied: false, reply_id: null, error: null };
+async function executeSingleEngagement(tweet, fusionData, userClient, recentReplies = []) {
+  const result = { tweet_id: tweet.id, liked: false, replied: false, reply_id: null, reply_mode: null, error: null };
 
   try {
     // Step 1: Like
@@ -266,8 +326,10 @@ async function executeSingleEngagement(tweet, fusionData, userClient) {
     log.info(`Liked tweet ${tweet.id} by @${tweet.author_handle}`);
     await sleep(DELAY_BETWEEN_MS);
 
-    // Step 2: Generate and post reply
-    const replyText = await generateInsightReply(tweet, fusionData);
+    // Step 2: Select mode and generate reply
+    const mode      = selectReplyMode(recentReplies);
+    result.reply_mode = mode;
+    const replyText = await generateInsightReply(tweet, fusionData, mode);
     if (!replyText) return result;
 
     const replyResult = await withRetry(() => userClient.v2.reply(replyText, tweet.id), {
@@ -370,7 +432,8 @@ async function runEngagementEngine(fusionData = null, opts = {}) {
     }
 
     try {
-      const result = await executeSingleEngagement(tweet, fusionData, userClient);
+      const recentReplies = [...logData.daily, ...logData.allTime.slice(-20)];
+      const result        = await executeSingleEngagement(tweet, fusionData, userClient, recentReplies);
 
       logData.daily.push({
         tweet_id:    tweet.id,
@@ -378,6 +441,7 @@ async function runEngagementEngine(fusionData = null, opts = {}) {
         liked:       result.liked,
         replied:     result.replied,
         reply_id:    result.reply_id,
+        reply_mode:  result.reply_mode,
         priority:    tweet.priority,
         followers:   tweet.followers,
         date:        new Date().toISOString().split('T')[0],
@@ -403,4 +467,5 @@ module.exports = {
   engageAfterFollow,
   findPriorityTweets,
   generateInsightReply,
+  selectReplyMode,
 };

@@ -37,6 +37,65 @@ function computeEngagementScore(metrics) {
   );
 }
 
+// ─── Growth value score ───────────────────────────────────────────────────────
+
+/**
+ * Compute a secondary growth_value_score that estimates authority-building
+ * potential beyond raw engagement. Factors:
+ *   - Reply depth ratio  — replies / max(impressions, 1) × 1000
+ *   - Retweet share rate — retweets / max(impressions, 1) × 1000
+ *   - Quote signal       — quotes × 4 (authority amplifier)
+ *   - Hook strength      — pattern-detected hook type adds 5-15 pts
+ *   - Callback usage     — tweet referencing prior analysis adds 10 pts
+ *   - Core token focus   — mentioning core watchlist tokens adds 5 pts
+ *
+ * Range: 0–100 (normalized).
+ *
+ * @param {object} metrics  - { likes, replies, retweets, quotes, impressions }
+ * @param {string} content  - tweet text
+ * @returns {number} growth_value_score 0–100
+ */
+const CORE_TOKENS = ['TAO', 'RNDR', 'FET', 'AKT', 'AGIX', 'INJ'];
+
+const HOOK_PATTERNS = {
+  contrarian:  /\b(wrong|consensus|everyone thinks|market is missing|but actually)\b/i,
+  tension:     /\b(vs\.?|against|while|despite|even as|yet)\b/i,
+  data_shock:  /\b(\d{1,3}(\.\d+)?%|\$\d|[0-9]+[kKmMbB])\b/,
+  question:    /\?/,
+};
+
+const CALLBACK_PATTERNS = [
+  /\b(called (it|this)|as (I |we )?said|last (week|month|time)|played out|exactly as)\b/i,
+  /\b(remember|back in|from (the )?(last|previous|earlier))\b/i,
+];
+
+function computeGrowthValueScore(metrics, content = '') {
+  const imp = metrics.impressions || 1; // avoid div/0
+
+  // Ratio signals (scaled per 1000 impressions)
+  const replyRatio   = ((metrics.replies  || 0) / imp) * 1000;
+  const rtRatio      = ((metrics.retweets || 0) / imp) * 1000;
+  const quoteSignal  = (metrics.quotes    || 0) * 4;
+
+  // Hook bonus
+  let hookBonus = 0;
+  if (HOOK_PATTERNS.contrarian.test(content))  hookBonus = 15;
+  else if (HOOK_PATTERNS.tension.test(content)) hookBonus = 10;
+  else if (HOOK_PATTERNS.data_shock.test(content)) hookBonus = 8;
+  else if (HOOK_PATTERNS.question.test(content))   hookBonus = 5;
+
+  // Callback bonus
+  const callbackBonus = CALLBACK_PATTERNS.some(p => p.test(content)) ? 10 : 0;
+
+  // Core token bonus
+  const tokenBonus = CORE_TOKENS.some(t => new RegExp(`\\b${t}\\b`, 'i').test(content)) ? 5 : 0;
+
+  const raw = replyRatio * 10 + rtRatio * 8 + quoteSignal + hookBonus + callbackBonus + tokenBonus;
+
+  // Normalize to 0–100
+  return parseFloat(Math.min(100, raw).toFixed(2));
+}
+
 // ─── Storage helpers ──────────────────────────────────────────────────────────
 
 function loadPerformanceLog() {
@@ -169,7 +228,8 @@ async function updatePerformanceLog() {
     const m = metrics[pub.tweetId];
     if (!m) continue;
 
-    const score = computeEngagementScore(m);
+    const score       = computeEngagementScore(m);
+    const growthScore = computeGrowthValueScore(m, pub.content);
     const entry = {
       tweet_id:     pub.tweetId,
       type:         pub.type,
@@ -179,12 +239,13 @@ async function updatePerformanceLog() {
       tokens:       pub.tokens,
       window:       pub.window,
       metrics: {
-        likes:        m.likes,
-        replies:      m.replies,
-        retweets:     m.retweets,
-        quotes:       m.quotes,
-        impressions:  m.impressions,
-        engagement_score: parseFloat(score.toFixed(2)),
+        likes:               m.likes,
+        replies:             m.replies,
+        retweets:            m.retweets,
+        quotes:              m.quotes,
+        impressions:         m.impressions,
+        engagement_score:    parseFloat(score.toFixed(2)),
+        growth_value_score:  growthScore,
       },
     };
     updated.push(entry);
@@ -411,5 +472,6 @@ module.exports = {
   detectPatterns,
   aggregateByType,
   computeEngagementScore,
+  computeGrowthValueScore,
   loadPerformanceLog,
 };

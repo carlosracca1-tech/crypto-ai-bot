@@ -15,6 +15,17 @@ const path = require('path');
 const { createModuleLogger } = require('../utils/logger');
 const { getLatestPatterns, loadPerformanceLog } = require('./performanceEngine');
 
+// Anti-overfitting — loaded gracefully so bot runs even if module is missing
+let applyAntiOverfitting  = (proposed) => proposed;
+let buildStabilityReport  = () => ({});
+let computeSmoothedScores = () => ({ smooth3d: {}, smooth7d: {}, blended: {} });
+try {
+  const aof = require('./antiOverfitting');
+  applyAntiOverfitting  = aof.applyAntiOverfitting;
+  buildStabilityReport  = aof.buildStabilityReport;
+  computeSmoothedScores = aof.computeSmoothedScores;
+} catch (e) {}
+
 const log = createModuleLogger('FeedbackLoop');
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
@@ -175,13 +186,30 @@ async function runFeedbackLoop() {
   log.info('Running daily feedback loop...');
 
   try {
-    const patterns  = getLatestPatterns();
-    const prevStrat = loadStrategy();
-    const newStrat  = generateStrategy(patterns);
+    const perfEntries = loadPerformanceLog();
+    const patterns    = getLatestPatterns();
+    const prevStrat   = loadStrategy();
+    const proposed    = generateStrategy(patterns);
+
+    // ── Anti-overfitting: dampen spikes, cap mix changes ─────────────────────
+    const corrected = applyAntiOverfitting(proposed, prevStrat, perfEntries);
+
+    // ── Stability report: stable_core / small_adjustments / tests ────────────
+    const smoothed         = computeSmoothedScores(perfEntries);
+    const stabilityReport  = buildStabilityReport(corrected, prevStrat, smoothed);
+
+    // Attach stability structure to the strategy
+    const newStrat = {
+      ...corrected,
+      stability: stabilityReport,
+      generated_at: new Date().toISOString(),
+    };
 
     saveStrategy(newStrat);
 
     // Build adjustment diff for logging/email
+    const antiNote = corrected._anti_overfitting?.changes?.join(' | ') || 'none';
+
     const adjustment = {
       date:             new Date().toISOString().split('T')[0],
       previous_strategy: {
@@ -196,7 +224,14 @@ async function runFeedbackLoop() {
         focus_tokens:    newStrat.focus_tokens,
         structure:       newStrat.structure,
       },
-      performance: patterns.performance_snapshot || {
+      anti_overfitting_applied: corrected._anti_overfitting?.applied || false,
+      anti_overfitting_notes:   antiNote,
+      stability: {
+        stable_core:       stabilityReport.stable_core,
+        small_adjustments: stabilityReport.small_adjustments,
+        tests:             stabilityReport.tests,
+      },
+      performance: {
         best_type:  patterns.best_type,
         avg_score:  patterns.avg_score,
         trend:      patterns.trend,
@@ -208,10 +243,13 @@ async function runFeedbackLoop() {
 
     log.info(`Strategy updated: ${newStrat.reason}`);
     log.info(`  Preferred types: ${newStrat.preferred_types.join(', ')}`);
-    log.info(`  Tone: ${newStrat.tone}`);
-    log.info(`  Focus tokens: ${newStrat.focus_tokens.join(', ')}`);
+    log.info(`  Anti-overfitting: ${antiNote}`);
+    log.info(`  Tone: ${newStrat.tone} | Focus tokens: ${newStrat.focus_tokens.join(', ')}`);
+    if (stabilityReport.tests?.length) {
+      log.info(`  Suggested tests: ${stabilityReport.tests.join(' | ')}`);
+    }
 
-    return { strategy: newStrat, patterns, adjustment };
+    return { strategy: newStrat, patterns, adjustment, stabilityReport };
   } catch (err) {
     log.error(`Feedback loop error: ${err.message}`);
     return { strategy: loadStrategy(), patterns: null, adjustment: null };
