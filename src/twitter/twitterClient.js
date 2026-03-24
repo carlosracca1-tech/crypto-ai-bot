@@ -84,9 +84,9 @@ async function postTweet(text, mediaId = null, replyToId = null, quoteTweetId = 
     return { id: `dryrun_${Date.now()}`, text };
   }
 
-  // Garantizar límite de 280 chars
-  if (text.length > 280) {
-    text = text.substring(0, 278).replace(/\s+\S*$/, '').trim();
+  // Garantizar límite de 260 chars (Twitter weighted: emojis like ⚡ count as 2)
+  if (text.length > 260) {
+    text = text.substring(0, 258).replace(/\s+\S*$/, '').trim();
     log.warn(`Tweet truncado a ${text.length} chars`);
   }
 
@@ -97,10 +97,18 @@ async function postTweet(text, mediaId = null, replyToId = null, quoteTweetId = 
   if (mediaId)      payload.media          = { media_ids: [String(mediaId)] };
   if (quoteTweetId) payload.quote_tweet_id = String(quoteTweetId);
 
+  log.info(`postTweet payload: textLen=${text.length} mediaId=${mediaId || 'none'} quoteTweetId=${quoteTweetId || 'none'}`);
+
   const result = await withRetry(
     async () => {
-      const response = await client.v2.tweet(payload);
-      return response.data;
+      try {
+        const response = await client.v2.tweet(payload);
+        return response.data;
+      } catch (apiErr) {
+        const detail = apiErr.data ? JSON.stringify(apiErr.data) : (apiErr.errors ? JSON.stringify(apiErr.errors) : '');
+        log.error(`Twitter API error ${apiErr.code || '?'}: ${apiErr.message}${detail ? ` | ${detail}` : ''}`);
+        throw apiErr;
+      }
     },
     { label: 'postTweet', ...config.retry }
   );
@@ -250,7 +258,9 @@ async function publishTweetsImmediate(tweets, fusionData = null) {
       });
       await sleep(5000);
     } catch (err) {
-      log.error(`Error publicando tweet (${tweet.type}): ${err.message}`);
+      // Log full Twitter API error detail (code, data, errors array)
+      const detail = err.data ? JSON.stringify(err.data) : (err.errors ? JSON.stringify(err.errors) : '');
+      log.error(`Error publicando tweet (${tweet.type}): ${err.message}${detail ? ` | detail: ${detail}` : ''} | textLen: ${tweet.content?.length}`);
       results.push({ success: false, error: err.message, type: tweet.type });
     }
   }

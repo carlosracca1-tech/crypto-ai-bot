@@ -162,7 +162,7 @@ SIGNAL TRANSLATION:
 - Volume spike → "real conviction behind the move"
 - Narrative ≠ price → "story is loud. price isn't listening. that divergence is where traps form."
 
-HARD LIMIT: Under 278 characters total. Count before submitting.`;
+HARD LIMIT: Under 260 characters total. Count before submitting.`;
 
 // ─── Helpers de traducción de señales ─────────────────────────────────────────
 
@@ -254,7 +254,7 @@ Line 1 (Hook): Sharp read on the sector. Not a summary — a real observation. T
 Line 2 (Insight): One data point, plain English. What's the market doing that people aren't saying out loud?
 Line 3 (Take): Your read. Keep something implicit. Don't over-explain. Leave them thinking.
 
-Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
+Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 260 chars.`;
 
   return callGPT(prompt, TWEET_TYPES.MARKET_INSIGHT);
 }
@@ -312,7 +312,7 @@ Line 3 (Decision): A conditional scenario using the key level. Use ONE of these 
   - "Watch for [condition] — then [implication]"
   Do NOT give buy/sell advice. Frame it as what to watch, not what to do.
 
-Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
+Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 260 chars.`;
 
   return callGPT(prompt, TWEET_TYPES.TECHNICAL_ANALYSIS);
 }
@@ -344,7 +344,7 @@ Line 1 (Hook): The gap between what people are saying and what's actually happen
 Line 2 (Insight): Is the narrative ahead of price or lagging? One clear signal from above.
 Line 3 (Take): Who's early. Who's late. Keep it implied — don't state it directly.
 
-Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
+Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 260 chars.`;
 
   return callGPT(prompt, TWEET_TYPES.NARRATIVE_INSIGHT);
 }
@@ -397,7 +397,7 @@ Line 3 (IMPLICATION): What fades or what to watch if momentum doesn't follow. A 
 
 CRITICAL: Do NOT end with a question. End with a scenario, a conditional, or a consequence.
 
-Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
+Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 260 chars.`;
 
   return callGPT(prompt, TWEET_TYPES.CONTRARIAN);
 }
@@ -425,7 +425,7 @@ Line 1 (Hook): The structural thing most people are missing. Not the price — t
 Line 2 (Insight): What's being built or broken right now. The underlying dynamic, not the candle.
 Line 3 (Take): The implication 6 months from now. Implied, not stated. One thing unsaid.
 
-Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.`;
+Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 260 chars.`;
 
   return callGPT(prompt, TWEET_TYPES.SYSTEM_THINKING);
 }
@@ -831,7 +831,7 @@ function validateDepthLayers(text) {
 // ─── Helper de llamada a GPT ───────────────────────────────────────────────────
 
 async function callGPT(userPrompt, tweetType) {
-  const MAX_CHAR = 278;
+  const MAX_CHAR = 260; // Twitter weighted chars: emojis count as 2 even if 1 JS char (e.g. ⚡ U+26A1); safe buffer below 280
   const MAX_REGEN_ATTEMPTS = 3;
   let bestAttempt = null; // fallback: best generated text even if quality gates fail
 
