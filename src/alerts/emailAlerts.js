@@ -23,12 +23,15 @@ const log = createModuleLogger('EmailAlerts');
 function getEmailConfig() {
   return {
     to:   process.env.ALERT_EMAIL || 'carlosracca1@gmail.com',
-    from: process.env.ALERT_EMAIL_FROM || process.env.SMTP_USER || 'bot@theprotocmind.ai',
+    from: process.env.ALERT_EMAIL_FROM || process.env.SMTP_USER || 'onboarding@resend.dev',
 
-    // SendGrid SMTP relay
+    // Priority 1: Resend HTTP API (works on Railway — no SMTP port needed)
+    resendKey: process.env.RESEND_API_KEY || null,
+
+    // Priority 2: SendGrid SMTP relay
     sendgridKey: process.env.SENDGRID_API_KEY || null,
 
-    // Direct SMTP
+    // Priority 3: Direct SMTP (Gmail, etc.) — NOTE: Railway blocks port 587
     smtpHost: process.env.SMTP_HOST || 'smtp.gmail.com',
     smtpPort: parseInt(process.env.SMTP_PORT || '587', 10),
     smtpUser: process.env.SMTP_USER || null,
@@ -36,7 +39,47 @@ function getEmailConfig() {
   };
 }
 
-// ─── Transporter factory ───────────────────────────────────────────────────────
+// ─── Resend HTTP API (no SMTP, works on Railway) ──────────────────────────────
+
+async function sendViaResend(cfg, mailOptions) {
+  const https = require('https');
+  const payload = JSON.stringify({
+    from:    mailOptions.from,
+    to:      [mailOptions.to],
+    subject: mailOptions.subject,
+    html:    mailOptions.html,
+    text:    mailOptions.text,
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.resend.com',
+      path:     '/emails',
+      method:   'POST',
+      headers: {
+        'Authorization': `Bearer ${cfg.resendKey}`,
+        'Content-Type':  'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(body)); } catch { resolve({ id: 'ok' }); }
+        } else {
+          reject(new Error(`Resend API error ${res.statusCode}: ${body}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Resend request timeout')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ─── Transporter factory (nodemailer — SendGrid or direct SMTP) ───────────────
 
 let _transporter = null;
 
@@ -47,7 +90,7 @@ async function getTransporter() {
   try {
     nodemailer = require('nodemailer');
   } catch {
-    log.warn('nodemailer no instalado — emails deshabilitados');
+    log.warn('nodemailer no instalado — emails via Resend o deshabilitados');
     return null;
   }
 
@@ -65,19 +108,41 @@ async function getTransporter() {
   }
 
   if (cfg.smtpUser && cfg.smtpPass) {
+    const port = cfg.smtpPort;
     _transporter = nodemailer.createTransport({
       host: cfg.smtpHost,
-      port: cfg.smtpPort,
-      secure: cfg.smtpPort === 465,
+      port,
+      secure: port === 465,
       auth: { user: cfg.smtpUser, pass: cfg.smtpPass },
+      tls: { rejectUnauthorized: false },
+      connectionTimeout: 10000,
+      greetingTimeout:   10000,
+      socketTimeout:     15000,
     });
-    log.info(`Email transporter: SMTP ${cfg.smtpHost}:${cfg.smtpPort}`);
+    log.info(`Email transporter: SMTP ${cfg.smtpHost}:${port}`);
     return _transporter;
   }
 
-  log.warn('Email no configurado (SENDGRID_API_KEY o SMTP_USER+SMTP_PASS requeridos)');
   return null;
 }
+
+// ─── Startup diagnostic ───────────────────────────────────────────────────────
+
+function logEmailProviderStatus() {
+  const cfg = getEmailConfig();
+  if (cfg.resendKey) {
+    log.info(`📧 Email provider: Resend API (HTTP) → ${cfg.to}`);
+  } else if (cfg.sendgridKey) {
+    log.info(`📧 Email provider: SendGrid SMTP → ${cfg.to}`);
+  } else if (cfg.smtpUser && cfg.smtpPass) {
+    log.warn(`📧 Email provider: SMTP ${cfg.smtpHost}:${cfg.smtpPort} — WARNING: Railway bloquea puertos SMTP. Configura RESEND_API_KEY.`);
+  } else {
+    log.warn('📧 Email provider: NONE — configura RESEND_API_KEY en Railway para recibir alertas');
+  }
+}
+
+// Ejecutar al cargar el módulo
+logEmailProviderStatus();
 
 // ─── Fallback: log to file ─────────────────────────────────────────────────────
 
@@ -109,27 +174,48 @@ async function sendEmail(subject, htmlBody, textBody = '') {
   const cfg = getEmailConfig();
   log.info(`Enviando email: "${subject}" → ${cfg.to}`);
 
+  const mailOptions = {
+    from:    `"TheProtocoMind Bot" <${cfg.from}>`,
+    to:      cfg.to,
+    subject: `[TheProtocoMind] ${subject}`,
+    text:    textBody || htmlBody.replace(/<[^>]+>/g, ''),
+    html:    htmlBody,
+  };
+
+  // ── Priority 1: Resend HTTP API ──────────────────────────────────────────
+  if (cfg.resendKey) {
+    try {
+      const result = await sendViaResend(cfg, mailOptions);
+      log.info(`✅ Email enviado via Resend: ${result.id}`);
+      logEmailToFile(subject, textBody || subject);
+      return true;
+    } catch (err) {
+      log.error(`Error Resend: ${err.message}`);
+      logEmailToFile(subject, `RESEND FAILED: ${err.message}`);
+      return false;
+    }
+  }
+
+  // ── Priority 2 & 3: nodemailer (SendGrid o SMTP directo) ─────────────────
   const transporter = await getTransporter();
 
   if (!transporter) {
-    log.warn('Sin transporter — email guardado en data/email_log.json');
+    log.warn('Sin proveedor de email configurado — guardado en data/email_log.json');
+    log.warn('👉 Solución: agrega RESEND_API_KEY en Railway Variables (gratis en resend.com)');
     logEmailToFile(subject, textBody || htmlBody.replace(/<[^>]+>/g, ''));
     return false;
   }
 
   try {
-    const info = await transporter.sendMail({
-      from:    `"TheProtocoMind Bot" <${cfg.from}>`,
-      to:      cfg.to,
-      subject: `[TheProtocoMind] ${subject}`,
-      text:    textBody || htmlBody.replace(/<[^>]+>/g, ''),
-      html:    htmlBody,
-    });
+    const info = await transporter.sendMail(mailOptions);
     log.info(`✅ Email enviado: ${info.messageId}`);
-    logEmailToFile(subject, textBody || subject); // also log locally
+    logEmailToFile(subject, textBody || subject);
     return true;
   } catch (err) {
-    log.error(`Error enviando email: ${err.message}`);
+    log.error(`Error enviando email (${cfg.smtpHost}:${cfg.smtpPort}): ${err.message}`);
+    if (err.message.includes('timeout') || err.message.includes('ECONNREFUSED')) {
+      log.error('👉 Railway bloquea SMTP. Usa RESEND_API_KEY (resend.com) o SENDGRID_API_KEY');
+    }
     logEmailToFile(subject, `SEND FAILED: ${err.message}`);
     return false;
   }
