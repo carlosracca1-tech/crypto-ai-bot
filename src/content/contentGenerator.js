@@ -109,6 +109,7 @@ const TWEET_TYPES = {
   SYSTEM_THINKING:     'system_thinking',
   DIVERGENCE:          'divergence',
   FUNDAMENTAL_INSIGHT: 'fundamental_insight',
+  QUOTE_TWEET:         'quote_tweet',
 };
 
 // ─── System prompt base ────────────────────────────────────────────────────────
@@ -127,14 +128,22 @@ COMPRESSION RULES (non-negotiable):
 - Write a draft, then cut 30% of the words. Keep the punch, kill the filler.
 - Every word must earn its place.
 - Short > complete. Impact > explanation.
-- 3 lines. No more. Tight line breaks.
+- 3 lines. Each on its own row. Hard line break between each line.
+- Always reference tokens as $SYMBOL (e.g., $TAO, $FET, $NEAR, $RNDR).
+
+VISUAL FORMAT (mandatory):
+- Use exactly 1 strategic emoji per tweet. Place it at the START of the most impactful line.
+- The emoji acts as a visual bullet — it makes one line stand out as you scroll.
+- Good choices: ⚡ 📊 🔥 👀 ⚠️ 🧠 📉 📈 💀 🎯
+- Put it only at the beginning of a line, never at the end.
+- One emoji total per tweet — not one per line.
 
 VOICE:
-- "price isn't breaking — that's the signal"
+- "⚡ $TAO at $420 — RSI at 28, sellers exhausted."
 - "narrative loud. price quiet. that gap is where traps form."
-- "momentum stretched. if it doesn't follow through, this fades fast."
-- "everyone's watching X. the move is in Y."
-- "structure is clean. if it holds, next leg starts here."
+- "👀 if momentum doesn't follow through in 48h, this fades fast."
+- "everyone's watching $FET. the move is in $RNDR."
+- "📊 structure is clean on $NEAR. if it holds $5, next leg starts here."
 
 BANNED (instant disqualify):
 - Ending with a rhetorical question ("is anyone watching?", "but is anyone listening?")
@@ -421,6 +430,81 @@ Write it. Then cut 30% of the words. Return ONLY the final tweet. Max 278 chars.
   return callGPT(prompt, TWEET_TYPES.SYSTEM_THINKING);
 }
 
+// ─── Quote tweet generator ─────────────────────────────────────────────────────
+
+/**
+ * Genera un quote tweet: busca un tweet reciente del token top, genera un
+ * comentario sharp de 2 líneas encima del tweet citado.
+ *
+ * Si la búsqueda falla o no hay resultados relevantes, cae back a narrative tweet.
+ *
+ * @param {object} fusionData
+ * @returns {Promise<{text: string, quoteTweetId: string}|string|null>}
+ */
+async function generateQuoteTweet(fusionData) {
+  let searchTweetsForToken;
+  try {
+    searchTweetsForToken = require('../twitter/twitterClient').searchTweetsForToken;
+  } catch (e) {
+    log.warn('generateQuoteTweet: no se pudo cargar searchTweetsForToken — fallback a narrative');
+    return generateNarrativeTweet(fusionData);
+  }
+
+  // Identify top token
+  const topToken = fusionData.tokens?.[0];
+  if (!topToken) return generateNarrativeTweet(fusionData);
+
+  const rsiRead  = interpretRSI(topToken.rsi);
+  const macdRead = interpretMACD(topToken.macd);
+  const signals  = [rsiRead, macdRead].filter(Boolean).join(' | ');
+
+  // Search for a quality tweet to quote
+  let candidates = [];
+  try {
+    candidates = await searchTweetsForToken(topToken.symbol);
+  } catch (e) {
+    log.warn(`generateQuoteTweet: búsqueda falló — ${e.message}. Fallback a narrative.`);
+    return generateNarrativeTweet(fusionData);
+  }
+
+  if (!candidates || !candidates.length) {
+    log.info('generateQuoteTweet: sin candidatos — fallback a narrative tweet');
+    return generateNarrativeTweet(fusionData);
+  }
+
+  // Pick the most engaged tweet
+  const best = candidates.sort(
+    (a, b) => ((b.public_metrics?.like_count || 0) + (b.public_metrics?.retweet_count || 0)) -
+              ((a.public_metrics?.like_count || 0) + (a.public_metrics?.retweet_count || 0))
+  )[0];
+
+  log.info(`generateQuoteTweet: citando tweet ID ${best.id} (${best.public_metrics?.like_count || 0} likes)`);
+
+  // Generate sharp 2-line commentary to go above the quoted tweet
+  const prompt = `Write a sharp 2-line comment to go ABOVE this quoted tweet about $${topToken.symbol}.
+
+TWEET TO QUOTE:
+"${best.text.substring(0, 200)}"
+
+TOKEN DATA:
+- $${topToken.symbol} at ${formatPrice(topToken.currentPrice)}, ${topToken.change24h >= 0 ? 'up' : 'down'} ${Math.abs(topToken.change24h || 0).toFixed(1)}% in 24h
+${signals ? `- Signals: ${signals}` : ''}
+
+YOUR COMMENT (2 lines only):
+Line 1: Your sharp take on what they said. Add context, disagree, or name the key implication they missed. Use $${topToken.symbol}.
+Line 2: The conditional or what to watch. A scenario. NOT a rhetorical question.
+
+STYLE: Same voice — compressed, analytical, no hedging.
+Use 1 strategic emoji at the start of ONE line.
+Max 220 characters total (the quoted tweet appears below automatically — don't repeat its content).
+Return ONLY the comment. No quotes around it.`;
+
+  const commentary = await callGPT(prompt, TWEET_TYPES.QUOTE_TWEET);
+  if (!commentary) return generateNarrativeTweet(fusionData);
+
+  return { text: commentary, quoteTweetId: best.id };
+}
+
 // ─── Generación de threads ─────────────────────────────────────────────────────
 
 /**
@@ -525,6 +609,7 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
       [TWEET_TYPES.NARRATIVE_INSIGHT]:   generateNarrativeTweet,
       [TWEET_TYPES.CONTRARIAN]:          generateContrarianTweet,
       [TWEET_TYPES.SYSTEM_THINKING]:     generateSystemTweet,
+      [TWEET_TYPES.QUOTE_TWEET]:         generateQuoteTweet,
       [TWEET_TYPES.FUNDAMENTAL_INSIGHT]: async (fd) => {
         const { generateFundamentalTweet } = require('../fundamental/fundamentalAnalysis');
         return generateFundamentalTweet(fd);
@@ -535,11 +620,17 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
 
     log.info(`Generando tweet único tipo: ${targetType}`);
     const tweetContent = await generator(fusionData);
-    const tweets = tweetContent ? [{
+
+    // Normalize: some generators (quote_tweet) return {text, quoteTweetId}
+    const tweetText    = (tweetContent && typeof tweetContent === 'object') ? tweetContent.text : tweetContent;
+    const quoteTweetId = (tweetContent && typeof tweetContent === 'object') ? tweetContent.quoteTweetId : null;
+
+    const tweets = tweetText ? [{
       id: `tweet_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       type: targetType,
-      content: tweetContent,
-      charCount: tweetContent.length,
+      content: tweetText,
+      quoteTweetId: quoteTweetId || null,
+      charCount: tweetText.length,
       scheduledFor: null,
       posted: false,
       postId: null,
@@ -567,6 +658,7 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
     [TWEET_TYPES.NARRATIVE_INSIGHT]:   { type: TWEET_TYPES.NARRATIVE_INSIGHT,   generator: generateNarrativeTweet     },
     [TWEET_TYPES.CONTRARIAN]:          { type: TWEET_TYPES.CONTRARIAN,          generator: generateContrarianTweet    },
     [TWEET_TYPES.SYSTEM_THINKING]:     { type: TWEET_TYPES.SYSTEM_THINKING,     generator: generateSystemTweet        },
+    [TWEET_TYPES.QUOTE_TWEET]:         { type: TWEET_TYPES.QUOTE_TWEET,         generator: generateQuoteTweet         },
     [TWEET_TYPES.FUNDAMENTAL_INSIGHT]: {
       type: TWEET_TYPES.FUNDAMENTAL_INSIGHT,
       generator: async (fd) => {
@@ -608,18 +700,23 @@ async function generateDailyContent(fusionData, includeThread = false, targetTyp
       log.info(`Generando tweet tipo: ${type}`);
       const tweetContent = await generator(fusionData);
 
-      if (tweetContent) {
+      // Normalize: some generators (quote_tweet) return {text, quoteTweetId}
+      const tweetText    = (tweetContent && typeof tweetContent === 'object') ? tweetContent.text : tweetContent;
+      const quoteTweetId = (tweetContent && typeof tweetContent === 'object') ? tweetContent.quoteTweetId : null;
+
+      if (tweetText) {
         tweets.push({
           id: `tweet_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           type,
-          content: tweetContent,
-          charCount: tweetContent.length,
+          content: tweetText,
+          quoteTweetId: quoteTweetId || null,
+          charCount: tweetText.length,
           scheduledFor: null,
           posted: false,
           postId: null,
           generatedAt: new Date().toISOString(),
         });
-        log.info(`Tweet ${type} generado (${tweetContent.length} chars)`);
+        log.info(`Tweet ${type} generado (${tweetText.length} chars)${quoteTweetId ? ` [quote: ${quoteTweetId}]` : ''}`);
       }
     } catch (err) {
       log.error(`Error generando tweet tipo ${type}: ${err.message}`);

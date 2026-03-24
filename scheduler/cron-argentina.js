@@ -49,13 +49,18 @@ const log = createModuleLogger('Scheduler-AR');
 //  Slot 5: 19:00–20:30  →  narrative_insight
 //  Slot 6: 21:00–22:30  →  market_insight (segunda pasada del día)
 //
+// ─── Tweet slot distribution ───────────────────────────────────────────────────
+//  Option 1 (all 6):  Visual format — emoji + line breaks in every tweet
+//  Option 2 (slots 1 & 3): Chart attached — market_insight + technical_analysis
+//  Option 3 (slot 5): Quote tweet — finds a relevant CT tweet + adds sharp commentary
+//
 const TWEET_WINDOWS = [
-  { startH: 8,  startM: 0,  endH: 9,  endM: 30, type: 'market_insight',      label: '📊 Market Insight'      },
-  { startH: 10, startM: 30, endH: 12, endM: 0,  type: 'fundamental_insight', label: '🔬 Fundamental Insight'  },
-  { startH: 13, startM: 30, endH: 15, endM: 0,  type: 'technical_analysis',  label: '📈 Technical Analysis'   },
-  { startH: 16, startM: 30, endH: 18, endM: 0,  type: 'contrarian',          label: '⚡ Contrarian Take'      },
-  { startH: 19, startM: 0,  endH: 20, endM: 30, type: 'narrative_insight',   label: '🧠 Narrative Insight'    },
-  { startH: 21, startM: 0,  endH: 22, endM: 30, type: 'market_insight',      label: '📊 Market Insight (Eve)' },
+  { startH: 8,  startM: 0,  endH: 9,  endM: 30, type: 'market_insight',      label: '📊 Market Insight (+chart)' },
+  { startH: 10, startM: 30, endH: 12, endM: 0,  type: 'fundamental_insight', label: '🔬 Fundamental Insight'     },
+  { startH: 13, startM: 30, endH: 15, endM: 0,  type: 'technical_analysis',  label: '📈 Technical Analysis (+chart)' },
+  { startH: 16, startM: 30, endH: 18, endM: 0,  type: 'contrarian',          label: '⚡ Contrarian Take'         },
+  { startH: 19, startM: 0,  endH: 20, endM: 30, type: 'quote_tweet',         label: '💬 Quote Tweet'             },
+  { startH: 21, startM: 0,  endH: 22, endM: 30, type: 'market_insight',      label: '📊 Market Insight (Eve)'    },
 ];
 
 // ─── ENGAGEMENT WINDOWS (ART) ─────────────────────────────────────────────────

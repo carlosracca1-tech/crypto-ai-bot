@@ -72,14 +72,15 @@ async function uploadMedia(filePath) {
 // ─── Publicación de un tweet ──────────────────────────────────────────────────
 
 /**
- * Publica un tweet de texto (con media opcional).
- * @param {string}      text       - Contenido del tweet (máx 280 chars)
- * @param {string|null} mediaId    - media_id de imagen ya subida (o null)
- * @param {string|null} replyToId  - tweet ID al que responder
+ * Publica un tweet de texto (con media y/o quote opcionales).
+ * @param {string}      text          - Contenido del tweet (máx 280 chars)
+ * @param {string|null} mediaId       - media_id de imagen ya subida (o null)
+ * @param {string|null} replyToId     - tweet ID al que responder (o null)
+ * @param {string|null} quoteTweetId  - tweet ID a citar como quote tweet (o null)
  */
-async function postTweet(text, mediaId = null, replyToId = null) {
+async function postTweet(text, mediaId = null, replyToId = null, quoteTweetId = null) {
   if (config.content.dryRun) {
-    log.info(`[DRY RUN] Tweet (${text.length} chars)${mediaId ? ' [+imagen]' : ''}:\n${text}`);
+    log.info(`[DRY RUN] Tweet (${text.length} chars)${mediaId ? ' [+imagen]' : ''}${quoteTweetId ? ` [quote: ${quoteTweetId}]` : ''}:\n${text}`);
     return { id: `dryrun_${Date.now()}`, text };
   }
 
@@ -92,8 +93,9 @@ async function postTweet(text, mediaId = null, replyToId = null) {
   const client = await getPostingClient();
 
   const payload = { text };
-  if (replyToId) payload.reply  = { in_reply_to_tweet_id: replyToId };
-  if (mediaId)   payload.media  = { media_ids: [String(mediaId)] };
+  if (replyToId)    payload.reply          = { in_reply_to_tweet_id: replyToId };
+  if (mediaId)      payload.media          = { media_ids: [String(mediaId)] };
+  if (quoteTweetId) payload.quote_tweet_id = String(quoteTweetId);
 
   const result = await withRetry(
     async () => {
@@ -103,8 +105,56 @@ async function postTweet(text, mediaId = null, replyToId = null) {
     { label: 'postTweet', ...config.retry }
   );
 
-  log.info(`✅ Tweet publicado! ID: ${result.id} | ${text.length} chars${mediaId ? ' | con imagen' : ''}`);
+  log.info(`✅ Tweet publicado! ID: ${result.id} | ${text.length} chars${mediaId ? ' | con imagen' : ''}${quoteTweetId ? ' | quote tweet' : ''}`);
   return result;
+}
+
+// ─── Búsqueda de tweets para quote (Bearer Token — app-only) ──────────────────
+
+/**
+ * Busca tweets recientes sobre un token para usar como quote tweet.
+ * Usa Bearer Token (app-only, sin costo de escritura).
+ *
+ * @param {string} symbol - Token symbol (e.g., 'TAO', 'FET')
+ * @returns {Promise<Array>} Lista de tweet objects con id, text, public_metrics
+ */
+async function searchTweetsForToken(symbol) {
+  const bearerToken = config.twitter.bearerToken;
+  if (!bearerToken) {
+    log.warn('searchTweetsForToken: TWITTER_BEARER_TOKEN no configurado');
+    return [];
+  }
+
+  try {
+    const appClient = new TwitterApi(bearerToken);
+
+    // Query: menciona el token, sin retweets, sin replies, inglés
+    const query = `$${symbol} -is:retweet -is:reply lang:en`;
+
+    const result = await appClient.v2.search(query, {
+      max_results: 15,
+      'tweet.fields': ['public_metrics', 'created_at', 'author_id', 'entities'],
+      sort_order: 'relevancy',
+    });
+
+    const tweets = result.data?.data || [];
+
+    // Filtrar: mínimo 3 likes, texto sustancial (>40 chars), no bots obvios
+    const filtered = tweets
+      .filter(t =>
+        (t.public_metrics?.like_count || 0) >= 3 &&
+        t.text.length > 40 &&
+        !t.text.startsWith('RT ') &&
+        !/^(gm|GM|ngmi|NGMI)/i.test(t.text.trim())
+      )
+      .slice(0, 8);
+
+    log.info(`searchTweetsForToken($${symbol}): ${filtered.length} candidatos válidos de ${tweets.length} resultados`);
+    return filtered;
+  } catch (err) {
+    log.warn(`searchTweetsForToken error: ${err.message}`);
+    return [];
+  }
 }
 
 // ─── Publicación de thread ────────────────────────────────────────────────────
@@ -159,10 +209,13 @@ async function publishTweetsImmediate(tweets, fusionData = null) {
 
     let mediaId = null;
 
-    // ── Generar y subir chart para tweet técnico ────────────────────────────
-    if (tweet.type === 'technical_analysis' && fusionData) {
+    // ── Generar y subir chart — Opción 2: 2 tipos de tweet con chart ──────
+    // technical_analysis (Slot 3): chart de setup técnico del token focus
+    // market_insight (Slot 1, mañana): chart del token líder del día
+    const CHART_TYPES = new Set(['technical_analysis', 'market_insight']);
+    if (CHART_TYPES.has(tweet.type) && fusionData) {
       try {
-        log.info('Generando chart para tweet técnico...');
+        log.info(`Generando chart para tweet ${tweet.type}...`);
         const chartPath = await generateChartForToken(fusionData);
 
         if (chartPath) {
@@ -179,15 +232,22 @@ async function publishTweetsImmediate(tweets, fusionData = null) {
       }
     }
 
-    // ── Publicar tweet ──────────────────────────────────────────────────────
+    // ── Publicar tweet (soporta quote tweets — Opción 3) ───────────────────
     try {
-      const published = await postTweet(tweet.content, mediaId);
-      tweet.posted   = true;
-      tweet.postId   = published.id;
-      tweet.postedAt = new Date().toISOString();
-      tweet.hasChart = !!mediaId;
+      const published = await postTweet(tweet.content, mediaId, null, tweet.quoteTweetId || null);
+      tweet.posted      = true;
+      tweet.postId      = published.id;
+      tweet.postedAt    = new Date().toISOString();
+      tweet.hasChart    = !!mediaId;
+      tweet.isQuoteTweet = !!tweet.quoteTweetId;
 
-      results.push({ success: true, tweetId: published.id, type: tweet.type, hasChart: !!mediaId });
+      results.push({
+        success: true,
+        tweetId: published.id,
+        type: tweet.type,
+        hasChart: !!mediaId,
+        isQuoteTweet: !!tweet.quoteTweetId,
+      });
       await sleep(5000);
     } catch (err) {
       log.error(`Error publicando tweet (${tweet.type}): ${err.message}`);
@@ -204,6 +264,7 @@ module.exports = {
   postTweet,
   postThread,
   publishTweetsImmediate,
+  searchTweetsForToken,
   // Legacy alias
   publishScheduledTweets: publishTweetsImmediate,
 };
