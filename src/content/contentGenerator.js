@@ -736,6 +736,7 @@ function validateDepthLayers(text) {
 async function callGPT(userPrompt, tweetType) {
   const MAX_CHAR = 278;
   const MAX_REGEN_ATTEMPTS = 3;
+  let bestAttempt = null; // fallback: best generated text even if quality gates fail
 
   // ── Load adaptive injections ──────────────────────────────────────────────
   const strategy        = _getCurrentStrategy();
@@ -796,15 +797,19 @@ async function callGPT(userPrompt, tweetType) {
 
     if (text.length > MAX_CHAR) {
       log.warn(`Tweet demasiado largo en intento ${attempt}: ${text.length} chars > ${MAX_CHAR}. Regenerando...`);
+      if (!bestAttempt) bestAttempt = text.substring(0, MAX_CHAR).trim(); // store trimmed as last resort
       continue;
     }
+
+    // Keep track of the best generated text as fallback in case all gates fail
+    if (!bestAttempt) bestAttempt = text;
 
     // ── Depth layer validation (Observation + Interpretation + Implication) ──
     const depthResult = validateDepthLayers(text);
     if (!depthResult.pass && attempt < MAX_REGEN_ATTEMPTS) {
       log.warn(`DepthLayer FAIL (attempt ${attempt}): ${depthResult.reason?.substring(0, 100)}`);
-      // Inject the failure reason as extra context for the next attempt
       userPrompt = userPrompt + `\n\nPREVIOUS ATTEMPT REJECTED: ${depthResult.reason} Fix this.`;
+      bestAttempt = text; // update fallback with latest attempt
       continue;
     }
 
@@ -812,6 +817,7 @@ async function callGPT(userPrompt, tweetType) {
     const signalCheck = _signalRelevanceGate(text, tweetType);
     if (!signalCheck.pass && attempt < MAX_REGEN_ATTEMPTS) {
       log.warn(`SignalRelevance FAIL (attempt ${attempt}): regenerating — ${signalCheck.regenerateWith?.substring(0, 80)}`);
+      bestAttempt = text;
       continue;
     }
 
@@ -819,6 +825,7 @@ async function callGPT(userPrompt, tweetType) {
     const naturalityCheck = _checkNaturality(text, recentTextsPhase2);
     if (!naturalityCheck.pass && attempt < MAX_REGEN_ATTEMPTS) {
       log.warn(`NaturalityGuard FAIL (attempt ${attempt}): ${naturalityCheck.reason?.substring(0, 80)}`);
+      bestAttempt = text;
       continue;
     }
 
@@ -832,6 +839,7 @@ async function callGPT(userPrompt, tweetType) {
     const divResult     = _diversityCheck(text, recentTexts);
     if (!divResult.ok && attempt < MAX_REGEN_ATTEMPTS) {
       log.warn(`Diversity check failed: ${divResult.reason} — regenerating`);
+      bestAttempt = text;
       continue;
     }
 
@@ -840,7 +848,14 @@ async function callGPT(userPrompt, tweetType) {
     return text;
   }
 
-  log.error(`Tweet tipo ${tweetType} superó todos los intentos. Descartando.`);
+  // All attempts exhausted — use best available rather than returning null
+  if (bestAttempt) {
+    log.warn(`Tweet tipo ${tweetType}: todos los intentos fallaron los gates. Usando mejor intento disponible.`);
+    _trackTweet(bestAttempt, tweetType);
+    return bestAttempt;
+  }
+
+  log.error(`Tweet tipo ${tweetType} superó todos los intentos sin generar contenido válido.`);
   return null;
 }
 
