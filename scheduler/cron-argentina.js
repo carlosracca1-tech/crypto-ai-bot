@@ -26,6 +26,7 @@ const { runFollowEngine }     = require('../src/growth/followEngine');
 const { runDailyHealthCheck } = require('../src/alerts/healthCheck');
 const { monitored, installGlobalHandlers } = require('../src/alerts/errorMonitor');
 const { config }              = require('../src/config');
+const { findRetweetCandidates, retweet } = require('../src/twitter/twitterClient');
 
 // ─── Adaptive systems ─────────────────────────────────────────────────────────
 let runLiveAdjuster      = async () => {};
@@ -68,6 +69,13 @@ const TWEET_WINDOWS = [
 const ENGAGEMENT_WINDOWS = [
   { startH: 9,  startM: 45, endH: 10, endM: 45, label: '💬 Engagement AM' },
   { startH: 17, startM: 0,  endH: 18, endM: 30, label: '💬 Engagement PM' },
+];
+
+// ─── RETWEET WINDOWS (ART) ──────────────────────────────────────────────────────
+
+const RETWEET_WINDOWS = [
+  { startH: 9,  startM: 30, endH: 10, endM: 15, label: '🔁 Retweet AM' },
+  { startH: 15, startM: 0,  endH: 16, endM: 0,  label: '🔁 Retweet PM' },
 ];
 
 // ─── FOLLOW WINDOW (ART) ──────────────────────────────────────────────────────
@@ -158,6 +166,22 @@ function scheduleDaySlots() {
     activeTimers.push(setTimeout(() => executeEngagementSlot(win.label), delayMs));
   }
 
+  // ── Retweet slots ──────────────────────────────────────────────────────────
+  for (const win of RETWEET_WINDOWS) {
+    const { hours, minutes } = randomTimeInWindow(win.startH, win.startM, win.endH, win.endM);
+    const fireUTC = artTimeToUTC(hours, minutes);
+    const delayMs = fireUTC - now;
+
+    schedule.slots.push({ label: win.label, type: 'retweet', timeART: fmt(hours, minutes), status: delayMs > 0 ? 'scheduled' : 'past' });
+
+    if (delayMs <= 0) {
+      log.info(`  ⏭  SKIP  ${win.label.padEnd(24)} ${fmt(hours, minutes)} ART`);
+      continue;
+    }
+    log.info(`  ✓  ${win.label.padEnd(24)} ${fmt(hours, minutes)} ART  (+${Math.round(delayMs / 60000)} min)`);
+    activeTimers.push(setTimeout(() => executeRetweetSlot(win.label), delayMs));
+  }
+
   // ── Follow slot ─────────────────────────────────────────────────────────────
   {
     const { hours, minutes } = randomTimeInWindow(FOLLOW_WINDOW.startH, FOLLOW_WINDOW.startM, FOLLOW_WINDOW.endH, FOLLOW_WINDOW.endM);
@@ -233,6 +257,44 @@ async function executeFollowSlot() {
   await monitored('Scheduler:FollowEngine', async () => {
     const result = await runFollowEngine({ dryRun: config.content.dryRun });
     log.info(`✓ Follow session | Seguidos: ${result.followed || 0} | Total día: ${result.followed || 0}`);
+  }, { slot: label });
+
+  running[label] = false;
+}
+
+async function executeRetweetSlot(label) {
+  if (running[label]) { log.warn(`${label} ya corre — skip`); return; }
+  running[label] = true;
+
+  const now = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+  log.info(`\n${'═'.repeat(60)}\nRETWEET SLOT: ${label} | ${now}\n${'═'.repeat(60)}`);
+
+  await monitored(`Scheduler:${label}`, async () => {
+    const dryRun = config.content.dryRun;
+
+    // 1. Buscar candidatos de alta calidad
+    const candidates = await findRetweetCandidates({ minLikes: 10, maxResults: 3 });
+
+    if (candidates.length === 0) {
+      log.info('No se encontraron candidatos para retweetear');
+      return;
+    }
+
+    log.info(`${candidates.length} candidatos para RT:`);
+    for (const c of candidates) {
+      log.info(`  @${c.authorUsername} (${c.likes} likes): "${c.text.substring(0, 80)}..."`);
+    }
+
+    // 2. Retweetear el mejor candidato (1 RT por sesión para no spamear)
+    const best = candidates[0];
+    if (dryRun) {
+      log.info(`[DRY RUN] Retweetearía: ${best.id} by @${best.authorUsername}`);
+    } else {
+      const result = await retweet(best.id);
+      if (result) {
+        log.info(`✅ Retweeteado: @${best.authorUsername} (${best.likes} likes)`);
+      }
+    }
   }, { slot: label });
 
   running[label] = false;

@@ -1,5 +1,7 @@
 'use strict';
 
+const fs   = require('fs');
+const path = require('path');
 const { TwitterApi } = require('twitter-api-v2');
 const { config } = require('../config');
 const { createModuleLogger } = require('../utils/logger');
@@ -7,6 +9,86 @@ const { withRetry, sleep } = require('../utils/retry');
 const { uniqueBy } = require('../utils/helpers');
 
 const log = createModuleLogger('TwitterScraper');
+
+// ─── Paths de cache ──────────────────────────────────────────────────────────
+
+const DATA_DIR         = path.join(process.cwd(), 'data');
+const API_STATUS_FILE  = path.join(DATA_DIR, 'twitter_api_status.json');
+const NARRATIVE_CACHE  = path.join(DATA_DIR, 'narrative_cache.json');
+
+// ─── Cache de estado de API (evita reintentar 402 por 24h) ───────────────────
+
+function loadApiStatus() {
+  try {
+    if (!fs.existsSync(API_STATUS_FILE)) return null;
+    return JSON.parse(fs.readFileSync(API_STATUS_FILE, 'utf8'));
+  } catch { return null; }
+}
+
+function saveApiStatus(status) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(API_STATUS_FILE, JSON.stringify(status, null, 2));
+  } catch (e) { log.warn(`No se pudo guardar API status: ${e.message}`); }
+}
+
+/**
+ * Verifica si la Twitter Search API está bloqueada (402) y no debemos reintentar.
+ * El bloqueo dura 24h desde la última detección.
+ */
+function isSearchApiBlocked() {
+  const status = loadApiStatus();
+  if (!status || !status.blocked) return false;
+
+  const blockedAt = new Date(status.blockedAt).getTime();
+  const ttlMs     = (status.ttlHours || 24) * 60 * 60 * 1000;
+  const expired   = Date.now() > blockedAt + ttlMs;
+
+  if (expired) {
+    log.info('Bloqueo de Twitter Search API expirado — reintentando en próximo ciclo');
+    saveApiStatus({ blocked: false });
+    return false;
+  }
+
+  const hoursLeft = ((blockedAt + ttlMs - Date.now()) / 3600000).toFixed(1);
+  log.info(`Twitter Search API bloqueada (402). Reintento en ${hoursLeft}h. Usando fallback.`);
+  return true;
+}
+
+function markSearchApiBlocked(reason = '402 Payment Required') {
+  log.warn(`Marcando Twitter Search API como bloqueada: ${reason}`);
+  saveApiStatus({
+    blocked:   true,
+    blockedAt: new Date().toISOString(),
+    reason,
+    ttlHours:  24,
+  });
+}
+
+// ─── Cache de narrativas del día (evita repetir búsquedas 6x/día) ──────────
+
+function loadNarrativeCache() {
+  try {
+    if (!fs.existsSync(NARRATIVE_CACHE)) return null;
+    const data = JSON.parse(fs.readFileSync(NARRATIVE_CACHE, 'utf8'));
+    const today = new Date().toISOString().split('T')[0];
+    if (data.date === today && data.tweets && data.tweets.length > 0) {
+      return data;
+    }
+    return null; // cache de otro día
+  } catch { return null; }
+}
+
+function saveNarrativeCache(result) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(NARRATIVE_CACHE, JSON.stringify({
+      date:    new Date().toISOString().split('T')[0],
+      savedAt: new Date().toISOString(),
+      ...result,
+    }, null, 2));
+  } catch (e) { log.warn(`No se pudo guardar narrative cache: ${e.message}`); }
+}
 
 // ─── Cliente Twitter ───────────────────────────────────────────────────────────
 
@@ -97,50 +179,84 @@ function normalizeTweet(tweet, userMap) {
   };
 }
 
+// ─── Queries consolidadas (de 13 a 6) ──────────────────────────────────────────
+
+const CONSOLIDATED_QUERIES = [
+  // 1. Mega-query general AI + crypto
+  '("AI crypto" OR "crypto AI" OR "decentralized AI" OR "on-chain AI") -is:retweet lang:en',
+  // 2. Compute & infrastructure
+  '("Render Network" OR RNDR OR "decentralized compute" OR "AI infrastructure" OR "GPU network") crypto -is:retweet lang:en',
+  // 3. AI agents & autonomy
+  '("AI agents" OR "autonomous agents" OR "AI agent" OR "AGI blockchain") crypto -is:retweet lang:en',
+  // 4. Bittensor ecosystem
+  '(Bittensor OR $TAO OR "decentralized ML") -is:retweet lang:en',
+  // 5. Fetch.ai + SingularityNET ecosystem
+  '("Fetch.ai" OR $FET OR SingularityNET OR AGIX OR "AI marketplace") crypto -is:retweet lang:en',
+  // 6. Data & ML markets
+  '("AI data marketplace" OR "machine learning blockchain" OR "data economy") crypto -is:retweet lang:en',
+];
+
 // ─── Búsqueda multi-query ──────────────────────────────────────────────────────
 
 /**
- * Ejecuta búsquedas para todas las queries de narrative
+ * Ejecuta búsquedas para todas las queries de narrative.
+ * USA CACHE: solo busca 1x por día. Las siguientes 5 ejecuciones usan cache.
+ * @param {object} opts
+ * @param {boolean} opts.forceRefresh - Ignorar cache y buscar de nuevo
  * @returns {Promise<object>} - { tweets: [], byQuery: {} }
  */
-async function fetchNarrativeTweets() {
-  log.info(`Iniciando búsqueda de tweets para ${config.narrative.searchQueries.length} queries...`);
+async function fetchNarrativeTweets(opts = {}) {
+  // ── Check cache primero (evita repetir búsquedas 6x/día) ─────────────────
+  if (!opts.forceRefresh) {
+    const cached = loadNarrativeCache();
+    if (cached) {
+      log.info(`Usando cache de narrativas del día (${cached.tweets.length} tweets, guardado ${cached.savedAt})`);
+      return { tweets: cached.tweets, byQuery: cached.byQuery || {} };
+    }
+  }
 
-  if (!config.twitter.bearerToken) {
-    log.warn('Twitter Bearer Token no configurado - usando datos simulados para desarrollo');
+  // ── Check si la API está bloqueada (402) ──────────────────────────────────
+  if (isSearchApiBlocked()) {
     return buildFallbackNarrativeData();
   }
+
+  if (!config.twitter.bearerToken) {
+    log.warn('Twitter Bearer Token no configurado - usando datos simulados');
+    return buildFallbackNarrativeData();
+  }
+
+  const queries = CONSOLIDATED_QUERIES;
+  log.info(`Iniciando búsqueda de tweets para ${queries.length} queries consolidadas...`);
 
   const byQuery = {};
   const allTweets = [];
   let paymentRequired = false;
 
-  for (const query of config.narrative.searchQueries) {
-    // Si ya detectamos que la API requiere pago, no seguir intentando
+  for (const query of queries) {
     if (paymentRequired) {
       byQuery[query] = [];
       continue;
     }
 
     try {
-      log.info(`Buscando: "${query}"...`);
+      log.info(`Buscando: "${query.substring(0, 60)}..."...`);
       const tweets = await searchRecentTweets(
-        `(${query}) lang:en -is:retweet`,
+        query,
         config.narrative.tweetsPerQuery
       );
 
       byQuery[query] = tweets;
       allTweets.push(...tweets);
 
-      log.info(`"${query}": ${tweets.length} tweets obtenidos`);
+      log.info(`  → ${tweets.length} tweets obtenidos`);
       await sleep(2000);
     } catch (err) {
-      // Error 402 = plan de pago requerido → usar fallback inmediatamente
-      if (err.message && err.message.includes('402')) {
-        log.warn('Twitter API requiere plan de pago para búsqueda. Usando datos de fallback.');
+      if (err.message && (err.message.includes('402') || err.message.includes('Payment Required'))) {
+        log.warn('Twitter API requiere plan de pago. Marcando como bloqueada por 24h.');
+        markSearchApiBlocked('402 Payment Required');
         paymentRequired = true;
       } else {
-        log.error(`Error buscando "${query}": ${err.message}`);
+        log.error(`Error buscando: ${err.message}`);
       }
       byQuery[query] = [];
     }
@@ -148,13 +264,23 @@ async function fetchNarrativeTweets() {
 
   // Si la API no está disponible, usar fallback
   if (paymentRequired || allTweets.length === 0) {
-    log.warn('Usando datos de narrativas de fallback (Twitter Search API no disponible en plan actual)');
-    return buildFallbackNarrativeData();
+    log.warn('Usando datos de narrativas de fallback');
+    const fallback = buildFallbackNarrativeData();
+    // Guardar fallback en cache para no reintentar hoy
+    saveNarrativeCache(fallback);
+    return fallback;
   }
 
   const uniqueTweets = uniqueBy(allTweets, t => t.id);
   log.info(`Total: ${uniqueTweets.length} tweets únicos obtenidos`);
-  return { tweets: uniqueTweets, byQuery };
+
+  const result = { tweets: uniqueTweets, byQuery };
+
+  // ── Guardar en cache del día ─────────────────────────────────────────────
+  saveNarrativeCache(result);
+  log.info('Narrativas guardadas en cache del día');
+
+  return result;
 }
 
 /**
@@ -164,11 +290,15 @@ async function fetchNarrativeTweets() {
  */
 async function fetchTokenMentions(tokenName, tokenSymbol) {
   if (!config.twitter.bearerToken) return [];
+  if (isSearchApiBlocked()) return [];
 
   try {
     const query = `(${tokenName} OR $${tokenSymbol}) crypto lang:en -is:retweet`;
     return await searchRecentTweets(query, 30);
   } catch (err) {
+    if (err.message && err.message.includes('402')) {
+      markSearchApiBlocked('402 en fetchTokenMentions');
+    }
     log.error(`Error buscando menciones de ${tokenSymbol}: ${err.message}`);
     return [];
   }
@@ -253,7 +383,7 @@ function buildFallbackNarrativeData() {
   ];
 
   const byQuery = {};
-  for (const query of config.narrative.searchQueries) {
+  for (const query of CONSOLIDATED_QUERIES) {
     byQuery[query] = mockTweets.slice(0, 3);
   }
 
@@ -264,4 +394,6 @@ module.exports = {
   searchRecentTweets,
   fetchNarrativeTweets,
   fetchTokenMentions,
+  isSearchApiBlocked,
+  markSearchApiBlocked,
 };

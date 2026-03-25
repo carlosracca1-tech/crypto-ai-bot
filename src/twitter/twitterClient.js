@@ -133,6 +133,15 @@ async function searchTweetsForToken(symbol) {
     return [];
   }
 
+  // Check si la API está bloqueada (402)
+  try {
+    const { isSearchApiBlocked } = require('../narrative/twitterScraper');
+    if (isSearchApiBlocked()) {
+      log.info('Twitter Search API bloqueada (402) — skip searchTweetsForToken');
+      return [];
+    }
+  } catch { /* ignore if module not available */ }
+
   try {
     const appClient = new TwitterApi(bearerToken);
 
@@ -160,6 +169,12 @@ async function searchTweetsForToken(symbol) {
     log.info(`searchTweetsForToken($${symbol}): ${filtered.length} candidatos válidos de ${tweets.length} resultados`);
     return filtered;
   } catch (err) {
+    if (err.message?.includes('402')) {
+      try {
+        const { markSearchApiBlocked } = require('../narrative/twitterScraper');
+        markSearchApiBlocked('402 en searchTweetsForToken');
+      } catch { /* ignore */ }
+    }
     log.warn(`searchTweetsForToken error: ${err.message}`);
     return [];
   }
@@ -268,6 +283,161 @@ async function publishTweetsImmediate(tweets, fusionData = null) {
   return results;
 }
 
+// ─── Retweet ──────────────────────────────────────────────────────────────────
+
+/**
+ * Retweetea un tweet existente.
+ * @param {string} tweetId - ID del tweet a retweetear
+ * @returns {Promise<object|null>} Resultado del retweet o null si falla
+ */
+async function retweet(tweetId) {
+  if (!tweetId) {
+    log.warn('retweet: tweetId no proporcionado');
+    return null;
+  }
+
+  if (config.content.dryRun) {
+    log.info(`[DRY RUN] Retweet de: ${tweetId}`);
+    return { retweeted: true, tweetId, dryRun: true };
+  }
+
+  const client = await getPostingClient();
+
+  try {
+    // Necesitamos el user ID del bot para retweetear
+    const me = await client.v2.me();
+    const userId = me.data.id;
+
+    const result = await withRetry(
+      async () => {
+        const response = await client.v2.retweet(userId, tweetId);
+        return response.data;
+      },
+      { label: `retweet(${tweetId})`, ...config.retry }
+    );
+
+    log.info(`✅ Retweeteado! Tweet ID: ${tweetId}`);
+    return result;
+  } catch (err) {
+    const detail = err.data ? JSON.stringify(err.data) : '';
+    log.error(`Error retweeteando ${tweetId}: ${err.message}${detail ? ` | ${detail}` : ''}`);
+    return null;
+  }
+}
+
+/**
+ * Deshace un retweet.
+ * @param {string} tweetId - ID del tweet original
+ * @returns {Promise<object|null>}
+ */
+async function unretweet(tweetId) {
+  if (!tweetId) return null;
+
+  const client = await getPostingClient();
+
+  try {
+    const me = await client.v2.me();
+    const userId = me.data.id;
+
+    const result = await client.v2.unretweet(userId, tweetId);
+    log.info(`Unretweet exitoso: ${tweetId}`);
+    return result.data;
+  } catch (err) {
+    log.error(`Error en unretweet ${tweetId}: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Busca tweets de alta calidad sobre AI crypto para retweetear.
+ * Reutiliza searchTweetsForToken pero con criterios más estrictos.
+ * @param {object} opts
+ * @param {number} opts.minLikes - Mínimo de likes (default: 10)
+ * @param {number} opts.maxResults - Máximo resultados (default: 5)
+ * @returns {Promise<Array>} Lista de tweets candidatos para RT
+ */
+async function findRetweetCandidates(opts = {}) {
+  const { minLikes = 10, maxResults = 5 } = opts;
+
+  // Verificar si la API está bloqueada
+  let isBlocked = false;
+  try {
+    const { isSearchApiBlocked } = require('../narrative/twitterScraper');
+    isBlocked = isSearchApiBlocked();
+  } catch { /* ignore */ }
+
+  if (isBlocked) {
+    log.info('Twitter Search API bloqueada — skip findRetweetCandidates');
+    return [];
+  }
+
+  const bearerToken = config.twitter.bearerToken;
+  if (!bearerToken) return [];
+
+  const queries = [
+    '"AI crypto" OR "decentralized AI" -is:retweet lang:en',
+    '$TAO OR $FET OR $RNDR OR $NEAR -is:retweet lang:en',
+  ];
+
+  const allCandidates = [];
+
+  try {
+    const appClient = new TwitterApi(bearerToken);
+
+    for (const query of queries) {
+      try {
+        const result = await appClient.v2.search(query, {
+          max_results: 15,
+          'tweet.fields': ['public_metrics', 'created_at', 'author_id'],
+          'user.fields':  ['username', 'public_metrics', 'verified'],
+          expansions:     ['author_id'],
+          sort_order:     'relevancy',
+        });
+
+        const tweets = result.data?.data || [];
+        const users  = result.data?.includes?.users || [];
+        const userMap = Object.fromEntries(users.map(u => [u.id, u]));
+
+        for (const t of tweets) {
+          const likes     = t.public_metrics?.like_count || 0;
+          const retweets  = t.public_metrics?.retweet_count || 0;
+          const author    = userMap[t.author_id] || {};
+          const followers = author.public_metrics?.followers_count || 0;
+
+          if (likes < minLikes) continue;
+          if (followers < 500) continue;
+          if (t.text.length < 50) continue;
+
+          allCandidates.push({
+            id: t.id,
+            text: t.text,
+            authorUsername: author.username,
+            authorFollowers: followers,
+            likes,
+            retweets,
+            score: likes * 2 + retweets * 3 + Math.log1p(followers),
+          });
+        }
+
+        await sleep(2000);
+      } catch (err) {
+        if (err.message?.includes('402')) {
+          const { markSearchApiBlocked } = require('../narrative/twitterScraper');
+          markSearchApiBlocked('402 en findRetweetCandidates');
+          break;
+        }
+        log.warn(`Error buscando RT candidates: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    log.error(`findRetweetCandidates error: ${err.message}`);
+  }
+
+  return allCandidates
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxResults);
+}
+
 module.exports = {
   verifyCredentials,
   uploadMedia,
@@ -275,6 +445,9 @@ module.exports = {
   postThread,
   publishTweetsImmediate,
   searchTweetsForToken,
+  retweet,
+  unretweet,
+  findRetweetCandidates,
   // Legacy alias
   publishScheduledTweets: publishTweetsImmediate,
 };

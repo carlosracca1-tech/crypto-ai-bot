@@ -349,12 +349,37 @@ async function runPipeline(opts = {}) {
         publishResults.push({ type: 'thread', results: threadResults });
       }
 
+      const publishedCount = publishResults.filter(r => r.success !== false).length;
+      const failedCount    = publishResults.filter(r => r.success === false).length;
+
+      // Reportar status correctamente: si TODOS fallaron, es un fallo
+      const postingStatus = publishedCount === 0 && failedCount > 0
+        ? 'failed'
+        : failedCount > 0 ? 'partial' : 'ok';
+
       pipelineStages.posting = {
-        status: 'ok',
-        published: publishResults.filter(r => r.success !== false).length,
-        failed: publishResults.filter(r => r.success === false).length,
+        status:    postingStatus,
+        published: publishedCount,
+        failed:    failedCount,
       };
-      log.info(`ETAPA 6 completada: ${pipelineStages.posting.published} publicados`);
+
+      if (postingStatus === 'failed') {
+        log.error(`⚠️ ETAPA 6: TODOS los tweets fallaron (${failedCount} fallos). Verificar tokens OAuth2.`);
+        // Enviar alerta async (no bloquear)
+        setImmediate(async () => {
+          try {
+            const { sendErrorAlert } = require('./alerts/emailAlerts');
+            await sendErrorAlert({
+              module: 'Pipeline — Publicación fallida',
+              error: `0/${failedCount} tweets publicados. Posible token OAuth2 expirado.`,
+              stack: publishResults.filter(r => r.success === false).map(r => `${r.type}: ${r.error}`).join('\n'),
+              context: { accion: 'Verificar tokens OAuth2 — node scripts/reauthorize.js' },
+            });
+          } catch (e) { /* ignore */ }
+        });
+      } else {
+        log.info(`ETAPA 6 completada: ${publishedCount} publicados, ${failedCount} fallidos`);
+      }
 
       // ── Delayed performance fetch (non-blocking) ────────────────────────
       // Fetch metrics 15 minutes after publishing to allow engagement to accumulate
@@ -387,7 +412,8 @@ async function runPipeline(opts = {}) {
     stages: pipelineStages,
     date: new Date().toISOString().split('T')[0],
     dryRun,
-    success: !Object.values(pipelineStages).some(s => s.status === 'failed'),
+    success: !Object.values(pipelineStages).some(s => s.status === 'failed' && s !== pipelineStages.posting)
+              && pipelineStages.posting?.status !== 'failed',
   };
 
   await logPipelineRun(runSummary);

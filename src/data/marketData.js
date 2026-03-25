@@ -1,11 +1,42 @@
 'use strict';
 
+const fs   = require('fs');
+const path = require('path');
 const axios = require('axios');
 const { config } = require('../config');
 const { createModuleLogger } = require('../utils/logger');
 const { withRetry, sleep } = require('../utils/retry');
 
 const log = createModuleLogger('MarketData');
+
+// ─── Cache de OHLC del día (OHLC no cambia entre runs, solo precios) ─────────
+
+const OHLC_CACHE_FILE = path.join(process.cwd(), 'data', 'ohlc_cache.json');
+
+function loadOhlcCache() {
+  try {
+    if (!fs.existsSync(OHLC_CACHE_FILE)) return null;
+    const data = JSON.parse(fs.readFileSync(OHLC_CACHE_FILE, 'utf8'));
+    const today = new Date().toISOString().split('T')[0];
+    if (data.date === today && data.tokens && Object.keys(data.tokens).length > 0) {
+      return data;
+    }
+    return null;
+  } catch { return null; }
+}
+
+function saveOhlcCache(tokensData) {
+  try {
+    const dir = path.dirname(OHLC_CACHE_FILE);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(OHLC_CACHE_FILE, JSON.stringify({
+      date:    new Date().toISOString().split('T')[0],
+      savedAt: new Date().toISOString(),
+      tokens:  tokensData,
+    }, null, 2));
+    log.info('OHLC cache guardado para el día');
+  } catch (e) { log.warn(`No se pudo guardar OHLC cache: ${e.message}`); }
+}
 
 // Configuración de axios con interceptores de rate-limit
 const cgClient = axios.create({
@@ -253,17 +284,35 @@ async function getFullMarketSnapshot() {
   const startTime = Date.now();
   log.info('Iniciando snapshot completo del mercado...');
 
-  // 1. Overview general
+  // 1. Overview general (siempre fresco — es 1 sola llamada y trae precios actuales)
   const overview = await fetchAIMarketOverview();
   const topTokens = overview.slice(0, config.tokens.topN);
 
   // 2. OHLC y historial de precios para top tokens
-  const MIN_CANDLES = 50; // mínimo para calcular MA50 y detectar tendencia
+  //    OPTIMIZACIÓN: OHLC/historial se cachea por día (no cambia entre runs)
+  const MIN_CANDLES = 50;
   const enriched = [];
   const failedTokens = [];
 
+  // Intentar cargar cache de OHLC del día
+  const ohlcCache = loadOhlcCache();
+  const cacheHit  = !!ohlcCache;
+
+  if (cacheHit) {
+    log.info(`OHLC cache del día encontrado (${Object.keys(ohlcCache.tokens).length} tokens). Usando datos cacheados.`);
+  }
+
   for (const token of topTokens) {
     try {
+      // Si hay cache del día para este token, usarlo directamente
+      if (cacheHit && ohlcCache.tokens[token.id]) {
+        const cached = ohlcCache.tokens[token.id];
+        log.info(`${token.symbol}: usando OHLC cache (${cached.ohlc?.length || 0} candles)`);
+        enriched.push({ ...token, ohlc: cached.ohlc || [], history: cached.history || null });
+        continue;
+      }
+
+      // Sin cache: fetch completo (solo pasa en la primera ejecución del día)
       log.info(`Enriqueciendo datos para ${token.symbol}...`);
 
       const ohlcRaw = await fetchOHLC(token.id, config.technicalAnalysis.ohlcDays);
@@ -271,8 +320,6 @@ async function getFullMarketSnapshot() {
       const history = await fetchPriceHistory(token.id, config.technicalAnalysis.ohlcDays);
       await sleep(config.coingecko.rateLimit);
 
-      // Si CoinGecko devuelve pocos candles (granularidad semanal/4h),
-      // usar OHLC sintético construido desde el historial diario de precios
       let ohlc = ohlcRaw;
       if (ohlc.length < MIN_CANDLES) {
         const synthetic = buildOhlcFromPriceHistory(history);
@@ -290,16 +337,23 @@ async function getFullMarketSnapshot() {
       enriched.push({ ...token, ohlc: [], history: null });
       failedTokens.push({ symbol: token.symbol, error: err.message });
 
-      // FIX: si el error es 429 (rate limit), esperar un cooldown largo antes
-      // del próximo token para romper la cascada de fallos consecutivos.
-      // Sin este sleep, el siguiente token empieza casi de inmediato y
-      // también falla porque la API sigue bloqueada.
       if (err.message && err.message.includes('429')) {
         const cooldown = config.coingecko.rateLimitCooldownMs || 15000;
         log.warn(`429 en ${token.symbol} — cooldown ${cooldown}ms antes del próximo token`);
         await sleep(cooldown);
       }
     }
+  }
+
+  // Guardar OHLC cache si fue una ejecución fresca (sin cache previo)
+  if (!cacheHit) {
+    const cacheData = {};
+    for (const t of enriched) {
+      if (t.ohlc && t.ohlc.length > 0) {
+        cacheData[t.id] = { ohlc: t.ohlc, history: t.history };
+      }
+    }
+    saveOhlcCache(cacheData);
   }
 
   // Alerta de degradación si ≥30% de los tokens fallaron

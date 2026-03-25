@@ -11,6 +11,7 @@ const { TwitterApi } = require('twitter-api-v2');
 const { config }     = require('../config');
 const { createModuleLogger } = require('../utils/logger');
 const { sleep }      = require('../utils/retry');
+const { isSearchApiBlocked, markSearchApiBlocked } = require('../narrative/twitterScraper');
 
 const log = createModuleLogger('TweetDiscovery');
 
@@ -96,6 +97,12 @@ async function discoverTweets(excludeTweetIds = []) {
     return [];
   }
 
+  // ── Check si la API está bloqueada (402) ──────────────────────────────────
+  if (isSearchApiBlocked()) {
+    log.info('Twitter Search API bloqueada (402) — discovery deshabilitado hasta reset');
+    return [];
+  }
+
   const client       = new TwitterApi(bearerToken);
   const excludeSet   = new Set(excludeTweetIds);
   const allCandidates = [];
@@ -167,7 +174,11 @@ async function discoverTweets(excludeTweetIds = []) {
       log.info(`  → ${queryAdded} candidatos aceptados`);
       await sleep(1200); // respeto rate limits
     } catch (err) {
-      if (err.code === 429) {
+      if (err.message?.includes('402') || err.code === 402) {
+        log.warn('Twitter Search API requiere plan de pago (402). Bloqueando por 24h.');
+        markSearchApiBlocked('402 en tweetDiscovery');
+        break; // No seguir intentando
+      } else if (err.code === 429) {
         log.warn('Rate limit hit en búsqueda — esperando 60s');
         await sleep(60000);
       } else {

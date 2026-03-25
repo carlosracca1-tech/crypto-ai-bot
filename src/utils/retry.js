@@ -13,6 +13,15 @@ const log = createModuleLogger('Retry');
  * @param {string} opts.label - Etiqueta para el log
  * @returns {Promise<any>}
  */
+// Errores que NO deben reintentarse (no son transitorios)
+const NON_RETRYABLE_CODES = ['402', '401', '403'];
+
+function isNonRetryableError(err) {
+  const msg = err.message || '';
+  const code = String(err.code || err.statusCode || '');
+  return NON_RETRYABLE_CODES.some(c => msg.includes(c) || code === c);
+}
+
 async function withRetry(fn, opts = {}) {
   const {
     maxRetries = 3,
@@ -27,6 +36,13 @@ async function withRetry(fn, opts = {}) {
       return await fn();
     } catch (err) {
       lastError = err;
+
+      // No reintentar errores de billing/auth (402, 401, 403)
+      if (isNonRetryableError(err)) {
+        log.error(`${label} falló con error no-reintentable: ${err.message}`);
+        throw err;
+      }
+
       const isLast = attempt > maxRetries;
 
       if (isLast) {
