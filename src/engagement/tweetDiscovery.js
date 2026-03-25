@@ -14,6 +14,7 @@ const { config }     = require('../config');
 const { createModuleLogger } = require('../utils/logger');
 const { sleep }      = require('../utils/retry');
 const { isSearchApiBlocked, markSearchApiBlocked } = require('../narrative/twitterScraper');
+const { getCacheSection } = require('../storage/twitterCache');
 
 const log = createModuleLogger('TweetDiscovery');
 
@@ -23,9 +24,9 @@ const DISCOVERY_CACHE_FILE = path.join(process.cwd(), 'data', 'discovery_cache.j
 
 // Consolidated from 5 to 3 broader queries to save API reads (cached per day)
 const SEARCH_QUERIES = [
-  '(Bittensor OR TAO OR "AI agents" OR "AI crypto") -is:retweet lang:en min_faves:5',
-  '(RNDR OR FET OR AGIX OR "Render Network" OR "SingularityNET") crypto -is:retweet lang:en min_faves:5',
-  '("decentralized AI" OR "on-chain AI" OR "AI infrastructure") crypto -is:retweet lang:en min_faves:5',
+  '(Bittensor OR TAO OR "AI agents" OR "AI crypto") -is:retweet lang:en',
+  '(RNDR OR FET OR AGIX OR "Render Network" OR "SingularityNET") crypto -is:retweet lang:en',
+  '("decentralized AI" OR "on-chain AI" OR "AI infrastructure") crypto -is:retweet lang:en',
 ];
 
 // ─── Parámetros de calidad ──────────────────────────────────────────────────────
@@ -106,7 +107,39 @@ async function discoverTweets(excludeTweetIds = []) {
     return [];
   }
 
-  // ── Day-cache: only search once per day (saves ~5 reads/session) ──────────
+  // ── Try unified daily cache first (populated by twitterCache.js) ─────────
+  const unifiedData = getCacheSection('engagement');
+  if (unifiedData && unifiedData.length > 0) {
+    const excludeSet = new Set(excludeTweetIds);
+    // Apply same quality filters + scoring to unified cache data
+    const candidates = unifiedData
+      .filter(t => !excludeSet.has(t.id))
+      .filter(t => (t.authorFollowers || 0) >= MIN_FOLLOWERS)
+      .filter(t => (t.likes || 0) >= MIN_LIKES)
+      .filter(t => (t.text?.length || 0) >= MIN_TWEET_LENGTH)
+      .filter(t => !isSpam(t.text))
+      .filter(t => !t.text?.startsWith('@'))
+      .map(t => ({
+        id: t.id,
+        text: t.text,
+        authorId: t.author_id,
+        authorHandle: t.authorUsername || 'unknown',
+        authorFollowers: t.authorFollowers || 0,
+        likes: t.likes || 0,
+        retweets: t.retweets || 0,
+        createdAt: t.created_at,
+        score: Math.log1p(t.likes || 0) * 2 + Math.log1p(t.retweets || 0) * 3 +
+               Math.log1p(t.authorFollowers || 0) * 0.5 +
+               ((t.text?.length || 0) > 100 ? 1 : 0) + ((t.text?.length || 0) > 180 ? 1 : 0),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_TWEETS_TOTAL);
+
+    log.info(`Using unified daily cache (${candidates.length} engagement candidates)`);
+    return candidates;
+  }
+
+  // ── Fallback: own day-cache (legacy, if unified cache wasn't populated) ───
   try {
     if (fs.existsSync(DISCOVERY_CACHE_FILE)) {
       const cache = JSON.parse(fs.readFileSync(DISCOVERY_CACHE_FILE, 'utf8'));
@@ -114,7 +147,7 @@ async function discoverTweets(excludeTweetIds = []) {
       if (cache.date === today && cache.tweets?.length > 0) {
         const excludeSet = new Set(excludeTweetIds);
         const filtered = cache.tweets.filter(t => !excludeSet.has(t.id));
-        log.info(`Using cached discovery tweets (${filtered.length} available from today)`);
+        log.info(`Using legacy discovery cache (${filtered.length} available from today)`);
         return filtered;
       }
     }

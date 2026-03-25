@@ -12,6 +12,7 @@ nixPkgs = [
   "fontconfig",
   "freetype",
   "pixman",
+  "sqlite",
 ]
 
 [phases.install]

@@ -18,6 +18,7 @@ const { createModuleLogger } = require('../utils/logger');
 const { withRetry, sleep }   = require('../utils/retry');
 const { getValidClient }     = require('../utils/tokenManager');
 const { generateChartForToken } = require('../charts/chartGenerator');
+const { getCacheSection }    = require('../storage/twitterCache');
 
 const log = createModuleLogger('TwitterClient');
 
@@ -138,25 +139,40 @@ async function postTweet(text, mediaId = null, replyToId = null, quoteTweetId = 
  * @returns {Promise<Array>} Lista de tweet objects con id, text, public_metrics
  */
 async function searchTweetsForToken(symbol) {
+  // ── Try unified daily cache first (0 API calls) ───────────────────────
+  const cachedQuotes = getCacheSection('quoteByToken');
+  if (cachedQuotes && cachedQuotes[symbol.toUpperCase()]) {
+    const cached = cachedQuotes[symbol.toUpperCase()];
+    const filtered = cached
+      .filter(t =>
+        (t.likes || 0) >= 3 &&
+        (t.text?.length || 0) > 40 &&
+        !t.text?.startsWith('RT ') &&
+        !/^(gm|GM|ngmi|NGMI)/i.test((t.text || '').trim())
+      )
+      .slice(0, 8);
+
+    log.info(`searchTweetsForToken($${symbol}): ${filtered.length} from unified cache`);
+    return filtered;
+  }
+
+  // ── Fallback: live API search ─────────────────────────────────────────
   const bearerToken = config.twitter.bearerToken;
   if (!bearerToken) {
     log.warn('searchTweetsForToken: TWITTER_BEARER_TOKEN no configurado');
     return [];
   }
 
-  // Check si la API está bloqueada (402)
   try {
     const { isSearchApiBlocked } = require('../narrative/twitterScraper');
     if (isSearchApiBlocked()) {
       log.info('Twitter Search API bloqueada (402) — skip searchTweetsForToken');
       return [];
     }
-  } catch { /* ignore if module not available */ }
+  } catch { /* ignore */ }
 
   try {
     const appClient = new TwitterApi(bearerToken);
-
-    // Query: menciona el token, sin retweets, sin replies, inglés
     const query = `$${symbol} -is:retweet -is:reply lang:en`;
 
     const result = await appClient.v2.search(query, {
@@ -167,7 +183,6 @@ async function searchTweetsForToken(symbol) {
 
     const tweets = result.data?.data || [];
 
-    // Filtrar: mínimo 3 likes, texto sustancial (>40 chars), no bots obvios
     const filtered = tweets
       .filter(t =>
         (t.public_metrics?.like_count || 0) >= 3 &&
@@ -177,7 +192,7 @@ async function searchTweetsForToken(symbol) {
       )
       .slice(0, 8);
 
-    log.info(`searchTweetsForToken($${symbol}): ${filtered.length} candidatos válidos de ${tweets.length} resultados`);
+    log.info(`searchTweetsForToken($${symbol}): ${filtered.length} candidatos válidos de ${tweets.length} (live)`);
     return filtered;
   } catch (err) {
     if (err.message?.includes('402')) {
@@ -367,7 +382,30 @@ async function unretweet(tweetId) {
 async function findRetweetCandidates(opts = {}) {
   const { minLikes = 10, maxResults = 5 } = opts;
 
-  // Verificar si la API está bloqueada
+  // ── Try unified daily cache first (0 API calls) ───────────────────────
+  const cachedRT = getCacheSection('retweet');
+  if (cachedRT && cachedRT.length > 0) {
+    const filtered = cachedRT
+      .filter(t => (t.likes || 0) >= minLikes)
+      .filter(t => (t.authorFollowers || 0) >= 500)
+      .filter(t => (t.text?.length || 0) >= 50)
+      .map(t => ({
+        id: t.id,
+        text: t.text,
+        authorUsername: t.authorUsername,
+        authorFollowers: t.authorFollowers || 0,
+        likes: t.likes || 0,
+        retweets: t.retweets || 0,
+        score: (t.likes || 0) * 2 + (t.retweets || 0) * 3 + Math.log1p(t.authorFollowers || 0),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults);
+
+    log.info(`findRetweetCandidates: ${filtered.length} from unified cache`);
+    return filtered;
+  }
+
+  // ── Fallback: live API search ─────────────────────────────────────────
   let isBlocked = false;
   try {
     const { isSearchApiBlocked } = require('../narrative/twitterScraper');

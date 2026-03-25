@@ -20,6 +20,7 @@ const { TwitterApi } = require('twitter-api-v2');
 const { config }             = require('../config');
 const { createModuleLogger } = require('../utils/logger');
 const { sleep }              = require('../utils/retry');
+const { getCacheSection }    = require('../storage/twitterCache');
 let isSearchApiBlocked;
 try { isSearchApiBlocked = require('../narrative/twitterScraper').isSearchApiBlocked; } catch { isSearchApiBlocked = () => false; }
 
@@ -39,8 +40,8 @@ const LOG_FILE = path.join(process.cwd(), 'data', 'follow_log.json');
 
 // Consolidated from 4 to 2 broader queries to save API reads
 const FOLLOW_QUERIES = [
-  '(Bittensor OR TAO OR "AI agents" OR "decentralized AI" OR "crypto AI") -is:retweet lang:en min_faves:15',
-  '(RNDR OR FET OR AGIX OR "Render Network" OR "SingularityNET") crypto analysis -is:retweet lang:en min_faves:10',
+  '(Bittensor OR TAO OR "AI agents" OR "decentralized AI" OR "crypto AI") -is:retweet lang:en',
+  '(RNDR OR FET OR AGIX OR "Render Network" OR "SingularityNET") crypto analysis -is:retweet lang:en',
 ];
 
 // ─── Persistencia ──────────────────────────────────────────────────────────────
@@ -135,7 +136,7 @@ async function runFollowEngine(opts = {}) {
     return { followed: 0, error: err.message };
   }
 
-  // Buscar candidatos
+  // Buscar candidatos — usar unified cache primero
   const alreadyFollowed = new Set([
     ...todayLog.follows.map(f => f.userId),
     ...todayLog.allTime.map(f => f.userId),
@@ -145,38 +146,55 @@ async function runFollowEngine(opts = {}) {
   const candidates = [];
   const seenIds    = new Set();
 
-  for (const query of FOLLOW_QUERIES) {
-    if (candidates.length >= remaining * 3) break; // ya tenemos suficientes candidatos
+  // Try unified daily cache first (0 API calls)
+  const cachedUsers = getCacheSection('follow');
+  if (cachedUsers && cachedUsers.length > 0) {
+    log.info(`Using unified daily cache (${cachedUsers.length} users available)`);
+    for (const user of cachedUsers) {
+      if (seenIds.has(user.id))             continue;
+      if (alreadyFollowed.has(user.id))     continue;
+      if (wasRecentlyFollowed(user.id, todayLog.allTime)) continue;
+      if (!isQualityAccount(user))          continue;
+      seenIds.add(user.id);
+      candidates.push(user);
+    }
+    log.info(`  → ${candidates.length} candidatos from cache`);
+  } else {
+    // Fallback: live search (only if cache not available)
+    log.info('No unified cache — falling back to live search');
+    for (const query of FOLLOW_QUERIES) {
+      if (candidates.length >= remaining * 3) break;
 
-    try {
-      log.info(`Buscando: "${query.substring(0, 60)}..."`);
+      try {
+        log.info(`Buscando: "${query.substring(0, 60)}..."`);
 
-      const results = await searchClient.v2.search(query, {
-        max_results: 20,
-        'tweet.fields': ['author_id'],
-        'user.fields':  ['username', 'public_metrics', 'description'],
-        'expansions':   ['author_id'],
-        sort_order:     'relevancy',
-      });
+        const results = await searchClient.v2.search(query, {
+          max_results: 20,
+          'tweet.fields': ['author_id'],
+          'user.fields':  ['username', 'public_metrics', 'description'],
+          'expansions':   ['author_id'],
+          sort_order:     'relevancy',
+        });
 
-      const users = results.data?.includes?.users || [];
-      for (const user of users) {
-        if (seenIds.has(user.id))             continue;
-        if (alreadyFollowed.has(user.id))     continue;
-        if (wasRecentlyFollowed(user.id, todayLog.allTime)) continue;
-        if (!isQualityAccount(user))          continue;
-        seenIds.add(user.id);
-        candidates.push(user);
+        const users = results.data?.includes?.users || [];
+        for (const user of users) {
+          if (seenIds.has(user.id))             continue;
+          if (alreadyFollowed.has(user.id))     continue;
+          if (wasRecentlyFollowed(user.id, todayLog.allTime)) continue;
+          if (!isQualityAccount(user))          continue;
+          seenIds.add(user.id);
+          candidates.push(user);
+        }
+
+        log.info(`  → ${users.length} usuarios encontrados, ${candidates.length} candidatos totales`);
+        await sleep(1500);
+      } catch (err) {
+        if (err.code === 429) {
+          log.warn('Rate limit en búsqueda — deteniendo recolección');
+          break;
+        }
+        log.error(`Error en query: ${err.message}`);
       }
-
-      log.info(`  → ${users.length} usuarios encontrados, ${candidates.length} candidatos totales`);
-      await sleep(1500);
-    } catch (err) {
-      if (err.code === 429) {
-        log.warn('Rate limit en búsqueda — deteniendo recolección');
-        break;
-      }
-      log.error(`Error en query: ${err.message}`);
     }
   }
 

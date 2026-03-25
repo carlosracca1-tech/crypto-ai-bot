@@ -32,10 +32,12 @@ const { findRetweetCandidates, retweet } = require('../src/twitter/twitterClient
 let runLiveAdjuster      = async () => {};
 let runPerformanceEngine = async () => {};
 let runPromptOptimizer   = async () => {};
+let refreshDailyCache    = async () => {};
 
 try { runLiveAdjuster      = require('../src/performance/liveAdjuster').runLiveAdjuster;           } catch (e) {}
 try { runPerformanceEngine = require('../src/performance/performanceEngine').runPerformanceEngine;  } catch (e) {}
 try { runPromptOptimizer   = require('../src/performance/promptOptimizer').runPromptOptimizer;      } catch (e) {}
+try { refreshDailyCache    = require('../src/storage/twitterCache').refreshDailyCache;              } catch (e) {}
 
 const log = createModuleLogger('Scheduler-AR');
 
@@ -334,9 +336,11 @@ function start() {
   scheduleDaySlots();
 
   // ── Reset diario 00:05 ART (03:05 UTC) ─────────────────────────────────────
-  cron.schedule('5 3 * * *', () => {
-    log.info('\n🔄 Reset diario — recalculando horarios...');
+  cron.schedule('5 3 * * *', async () => {
+    log.info('\n🔄 Reset diario — recalculando horarios + refreshing cache...');
     scheduleDaySlots();
+    // Pre-fetch daily cache for the new day
+    await monitored('TwitterCache:Reset', () => refreshDailyCache({ force: true }), {}, false);
   }, { scheduled: true, timezone: 'UTC' });
 
   // ── Threads semanales: Lunes 10:00 ART + Jueves 15:00 ART ──────────────────
@@ -358,6 +362,12 @@ function start() {
     const { cleanupOldFiles } = require('../src/storage/dataStore');
     log.info('Ejecutando limpieza semanal...');
     await cleanupOldFiles(30);
+
+    // Clean up SQLite DB (keep tweets 14 days, metrics 90 days)
+    try {
+      const { cleanup } = require('../src/storage/twitterDB');
+      cleanup(14, 90);
+    } catch (e) { log.warn(`DB cleanup skipped: ${e.message}`); }
   }, { scheduled: true, timezone: 'UTC' });
 
   // ── Live Adjuster: cada 2.5h — detecta virales y ajusta en tiempo real ──────
@@ -371,15 +381,25 @@ function start() {
   }
   log.info('  ⚡ Live Adjuster: cada ~2.5h');
 
-  // ── Performance Engine: 3 veces al día (mañana, tarde, noche ART) ────────────
-  // 08:00 UTC = 05:00 ART | 15:00 UTC = 12:00 ART | 22:00 UTC = 19:00 ART
-  for (const utcH of [8, 15, 22]) {
-    cron.schedule(`0 ${utcH} * * *`, async () => {
-      log.info(`\n📈 Performance Engine ejecutando (${utcH}:00 UTC)...`);
-      await monitored('PerformanceEngine', () => runPerformanceEngine(), {}, false);
-    }, { scheduled: true, timezone: 'UTC' });
-  }
-  log.info('  📈 Performance Engine: 3×/día (05:00, 12:00, 19:00 ART)');
+  // ── Twitter Daily Cache: once per day at 07:30 ART (10:30 UTC) ─────────────
+  // Fetches all search queries once and caches for the whole day.
+  // All modules (engagement, follow, retweet, quote) read from this cache.
+  cron.schedule('30 10 * * *', async () => {
+    log.info('\n🗄️  Daily Twitter Cache — refreshing all search data...');
+    await monitored('TwitterCache', () => refreshDailyCache({ force: true }), {}, false);
+  }, { scheduled: true, timezone: 'UTC' });
+  log.info('  🗄️  Twitter Cache: 1×/día (07:30 ART — before first slots)');
+
+  // Also refresh cache on daily reset (in case bot restarts mid-day)
+  // This is a no-op if cache already exists for today (unless forced above)
+
+  // ── Performance Engine: 1×/día at 22:00 UTC (19:00 ART) ──────────────────
+  // Reduced from 3x to 1x — tweets need time to accumulate metrics anyway
+  cron.schedule('0 22 * * *', async () => {
+    log.info('\n📈 Performance Engine ejecutando (22:00 UTC / 19:00 ART)...');
+    await monitored('PerformanceEngine', () => runPerformanceEngine(), {}, false);
+  }, { scheduled: true, timezone: 'UTC' });
+  log.info('  📈 Performance Engine: 1×/día (19:00 ART)');
 
   // ── Prompt Optimizer: semanal, domingos a las 04:00 UTC ──────────────────────
   cron.schedule('0 4 * * 0', async () => {

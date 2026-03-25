@@ -51,7 +51,8 @@ function saveCallbackLog(entries) {
 function getRecentTweets(windowHours = 72) {
   try {
     if (!fs.existsSync(PIPELINE_LOG)) return [];
-    const runs   = JSON.parse(fs.readFileSync(PIPELINE_LOG, 'utf8'));
+    const data   = JSON.parse(fs.readFileSync(PIPELINE_LOG, 'utf8'));
+    const runs   = Array.isArray(data) ? data : (data.runs || []);
     const cutoff = Date.now() - windowHours * 3600 * 1000;
     const tweets = [];
 

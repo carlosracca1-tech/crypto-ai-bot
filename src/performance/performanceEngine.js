@@ -16,6 +16,9 @@ const { createModuleLogger } = require('../utils/logger');
 const { withRetry }          = require('../utils/retry');
 const { config }             = require('../config');
 
+let twitterDB = null;
+try { twitterDB = require('../storage/twitterDB'); } catch { /* SQLite not available */ }
+
 const log = createModuleLogger('PerformanceEngine');
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
@@ -119,7 +122,8 @@ function savePerformanceLog(entries) {
 function getPublishedTweetIds(lookbackHours = 48) {
   try {
     if (!fs.existsSync(PIPELINE_LOG)) return [];
-    const runs = JSON.parse(fs.readFileSync(PIPELINE_LOG, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(PIPELINE_LOG, 'utf8'));
+    const runs = Array.isArray(data) ? data : (data.runs || []);
     const cutoff = Date.now() - lookbackHours * 3600 * 1000;
 
     const ids = [];
@@ -264,6 +268,15 @@ async function updatePerformanceLog() {
 
   merged.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
   savePerformanceLog(merged);
+
+  // Also write to SQLite for historical analysis
+  if (twitterDB && updated.length > 0) {
+    try {
+      twitterDB.upsertMetrics(updated);
+    } catch (err) {
+      log.warn(`Failed to write metrics to SQLite: ${err.message}`);
+    }
+  }
 
   log.info(`Performance log updated: ${updated.length} entries refreshed, ${merged.length} total`);
   return merged;
