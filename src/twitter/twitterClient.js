@@ -21,6 +21,17 @@ const { generateChartForToken } = require('../charts/chartGenerator');
 
 const log = createModuleLogger('TwitterClient');
 
+// ─── Cached user ID (avoid repeated v2.me() calls — each one is a Read) ────
+let _cachedUserId = null;
+
+async function getCachedUserId(client) {
+  if (_cachedUserId) return _cachedUserId;
+  const me = await client.v2.me();
+  _cachedUserId = me.data.id;
+  log.info(`User ID cached: ${_cachedUserId}`);
+  return _cachedUserId;
+}
+
 // ─── OAuth 2.0 posting client ──────────────────────────────────────────────────
 
 async function getPostingClient() {
@@ -304,9 +315,7 @@ async function retweet(tweetId) {
   const client = await getPostingClient();
 
   try {
-    // Necesitamos el user ID del bot para retweetear
-    const me = await client.v2.me();
-    const userId = me.data.id;
+    const userId = await getCachedUserId(client);
 
     const result = await withRetry(
       async () => {
@@ -336,8 +345,7 @@ async function unretweet(tweetId) {
   const client = await getPostingClient();
 
   try {
-    const me = await client.v2.me();
-    const userId = me.data.id;
+    const userId = await getCachedUserId(client);
 
     const result = await client.v2.unretweet(userId, tweetId);
     log.info(`Unretweet exitoso: ${tweetId}`);
@@ -448,6 +456,7 @@ module.exports = {
   retweet,
   unretweet,
   findRetweetCandidates,
+  getCachedUserId,
   // Legacy alias
   publishScheduledTweets: publishTweetsImmediate,
 };

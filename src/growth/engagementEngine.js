@@ -20,13 +20,16 @@ const { withRetry }          = require('../utils/retry');
 const { sleep }              = require('../utils/retry');
 const { config }             = require('../config');
 const { sendErrorAlert }     = require('../alerts/emailAlerts');
+let isSearchApiBlocked;
+try { isSearchApiBlocked = require('../narrative/twitterScraper').isSearchApiBlocked; } catch { isSearchApiBlocked = () => false; }
 
 const log = createModuleLogger('EngagementEngine');
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
-const DATA_DIR        = path.join(process.cwd(), 'data');
-const ENGAGEMENT_LOG  = path.join(DATA_DIR, 'engagement_log.json');
+const DATA_DIR              = path.join(process.cwd(), 'data');
+const ENGAGEMENT_LOG        = path.join(DATA_DIR, 'engagement_log.json');
+const ENGAGEMENT_CACHE_FILE = path.join(DATA_DIR, 'engagement_tweets_cache.json');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -41,6 +44,7 @@ const DELAY_BETWEEN_MS          = 8000; // 8s between actions
 
 let _appClient   = null;
 let _userClient  = null;
+let _cachedMyId  = null;  // Cache user ID to avoid repeated v2.me() reads
 
 function getAppClient() {
   if (!_appClient) {
@@ -105,18 +109,59 @@ function logInteraction(data, interaction) {
 
 // ─── Tweet search + prioritization ───────────────────────────────────────────
 
+// Consolidated from 4 to 2 broader queries to save API reads
 const SEARCH_QUERIES = [
-  '(BTC OR ETH OR SOL) crypto analysis -is:retweet lang:en',
-  '(TAO OR RNDR OR FET OR AGIX) AI crypto -is:retweet lang:en',
-  '(DeFi OR "on-chain" OR "layer 2") analysis -is:retweet lang:en',
-  '(Bitcoin OR Ethereum) price technical -is:retweet lang:en',
+  '(BTC OR ETH OR SOL OR TAO OR RNDR OR FET) crypto analysis -is:retweet lang:en',
+  '(DeFi OR "on-chain" OR "AI crypto" OR "decentralized AI") analysis -is:retweet lang:en',
 ];
+
+/**
+ * Load cached engagement tweets for today.
+ */
+function loadEngagementTweetsCache() {
+  try {
+    if (!fs.existsSync(ENGAGEMENT_CACHE_FILE)) return null;
+    const data = JSON.parse(fs.readFileSync(ENGAGEMENT_CACHE_FILE, 'utf8'));
+    const today = new Date().toISOString().split('T')[0];
+    if (data.date === today && data.tweets?.length > 0) {
+      return data.tweets;
+    }
+  } catch {}
+  return null;
+}
+
+function saveEngagementTweetsCache(tweets) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(ENGAGEMENT_CACHE_FILE, JSON.stringify({
+      date: new Date().toISOString().split('T')[0],
+      savedAt: new Date().toISOString(),
+      tweets,
+    }, null, 2));
+  } catch (err) {
+    log.warn(`Error saving engagement cache: ${err.message}`);
+  }
+}
 
 /**
  * Fetch candidate tweets for engagement.
  * Returns tweets sorted by priority score.
+ * Uses day-cache: only searches Twitter once/day, reuses for all sessions.
  */
 async function findPriorityTweets(maxPerQuery = 10) {
+  // Check day cache first — saves ~4 reads per session
+  const cached = loadEngagementTweetsCache();
+  if (cached) {
+    log.info(`Using cached engagement tweets (${cached.length} candidates from today)`);
+    return cached;
+  }
+
+  // Check if search API is blocked (402)
+  if (isSearchApiBlocked()) {
+    log.info('Twitter Search API bloqueada (402) — skipping engagement search');
+    return [];
+  }
+
   const client    = getAppClient();
   const cutoff    = new Date(Date.now() - VELOCITY_WINDOW_MINUTES * 60 * 1000).toISOString();
   const allTweets = [];
@@ -188,7 +233,15 @@ async function findPriorityTweets(maxPerQuery = 10) {
     return true;
   });
 
-  return dedup.sort((a, b) => b.priority - a.priority);
+  const sorted = dedup.sort((a, b) => b.priority - a.priority);
+
+  // Save to day-cache for reuse in the next engagement session
+  if (sorted.length > 0) {
+    saveEngagementTweetsCache(sorted);
+    log.info(`Saved ${sorted.length} engagement candidates to day-cache`);
+  }
+
+  return sorted;
 }
 
 // ─── Reply variation ──────────────────────────────────────────────────────────
@@ -317,9 +370,12 @@ async function executeSingleEngagement(tweet, fusionData, userClient, recentRepl
   const result = { tweet_id: tweet.id, liked: false, replied: false, reply_id: null, reply_mode: null, error: null };
 
   try {
-    // Step 1: Like
+    // Step 1: Like (use cached user ID to avoid extra API read)
+    if (!_cachedMyId) {
+      _cachedMyId = (await userClient.v2.me()).data.id;
+    }
     await withRetry(() => userClient.v2.like(
-      (await userClient.v2.me()).data.id,
+      _cachedMyId,
       tweet.id
     ), { label: 'like', retries: 2, delay: 2000 });
     result.liked = true;
@@ -350,39 +406,14 @@ async function executeSingleEngagement(tweet, fusionData, userClient, recentRepl
 // ─── Post-follow engagement ───────────────────────────────────────────────────
 
 /**
- * After following an account, like 1-2 of their recent tweets.
- * Called by followEngine after a successful follow.
+ * After following an account — SKIP timeline reads to save API quota.
+ * Previously fetched 3 tweets per follow (40 reads/day!). Now a no-op.
+ * The follow itself is enough engagement signal for the algorithm.
  */
 async function engageAfterFollow(userId, userHandle) {
-  try {
-    const appClient  = getAppClient();
-    const userClient = getUserClient();
-
-    // Fetch 3 recent tweets from the followed account
-    const recentTweets = await appClient.v2.userTimeline(userId, {
-      max_results: 3,
-      'tweet.fields': 'created_at,public_metrics',
-    });
-
-    const tweets = recentTweets.data?.data || [];
-    if (!tweets.length) return;
-
-    // Like the most recent relevant tweet
-    const toEngage = tweets.slice(0, 2);
-    const myId     = (await userClient.v2.me()).data.id;
-
-    for (const tweet of toEngage) {
-      try {
-        await userClient.v2.like(myId, tweet.id);
-        log.info(`Liked tweet from @${userHandle} after follow: ${tweet.id}`);
-        await sleep(3000);
-      } catch (err) {
-        log.warn(`Failed to like tweet from @${userHandle}: ${err.message}`);
-      }
-    }
-  } catch (err) {
-    log.warn(`Post-follow engagement failed for @${userHandle}: ${err.message}`);
-  }
+  // Intentionally empty — timeline reads were consuming ~40 API reads/day
+  // The follow action alone is sufficient for visibility
+  log.info(`Follow registered for @${userHandle} — skipping timeline reads (API quota optimization)`);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────

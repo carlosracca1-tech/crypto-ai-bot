@@ -73,9 +73,9 @@ const ENGAGEMENT_WINDOWS = [
 
 // ─── RETWEET WINDOWS (ART) ──────────────────────────────────────────────────────
 
+// Reduced from 2 to 1 session/day to save 2 API reads
 const RETWEET_WINDOWS = [
-  { startH: 9,  startM: 30, endH: 10, endM: 15, label: '🔁 Retweet AM' },
-  { startH: 15, startM: 0,  endH: 16, endM: 0,  label: '🔁 Retweet PM' },
+  { startH: 15, startM: 0,  endH: 16, endM: 0,  label: '🔁 Retweet' },
 ];
 
 // ─── FOLLOW WINDOW (ART) ──────────────────────────────────────────────────────

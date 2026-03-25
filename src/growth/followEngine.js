@@ -20,12 +20,14 @@ const { TwitterApi } = require('twitter-api-v2');
 const { config }             = require('../config');
 const { createModuleLogger } = require('../utils/logger');
 const { sleep }              = require('../utils/retry');
+let isSearchApiBlocked;
+try { isSearchApiBlocked = require('../narrative/twitterScraper').isSearchApiBlocked; } catch { isSearchApiBlocked = () => false; }
 
 const log = createModuleLogger('FollowEngine');
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
-const DAILY_FOLLOW_LIMIT  = 40;   // follows per day (safe for API limits)
+const DAILY_FOLLOW_LIMIT  = 15;   // reduced from 40 to save API quota
 const MIN_FOLLOWERS       = 500;  // mínimo de followers para considerar
 const MAX_FOLLOWING_RATIO = 5.0;  // max following/followers ratio (filtra cuentas spam)
 const REFOLLOW_DAYS       = 30;   // no re-seguir a alguien por N días
@@ -35,11 +37,10 @@ const LOG_FILE = path.join(process.cwd(), 'data', 'follow_log.json');
 
 // ─── Queries de búsqueda ────────────────────────────────────────────────────────
 
+// Consolidated from 4 to 2 broader queries to save API reads
 const FOLLOW_QUERIES = [
-  '(Bittensor OR TAO OR "AI agents" crypto) -is:retweet lang:en min_faves:20',
-  '("decentralized AI" OR "crypto AI" OR "AI infrastructure") -is:retweet lang:en min_faves:15',
-  '("Render Network" OR "SingularityNET" OR "Fetch.ai") analysis -is:retweet lang:en min_faves:10',
-  '(crypto analyst OR blockchain developer) AI "on-chain" -is:retweet lang:en min_faves:15',
+  '(Bittensor OR TAO OR "AI agents" OR "decentralized AI" OR "crypto AI") -is:retweet lang:en min_faves:15',
+  '(RNDR OR FET OR AGIX OR "Render Network" OR "SingularityNET") crypto analysis -is:retweet lang:en min_faves:10',
 ];
 
 // ─── Persistencia ──────────────────────────────────────────────────────────────
@@ -104,6 +105,12 @@ async function runFollowEngine(opts = {}) {
   if (!bearerToken || !accessToken || !accessSecret) {
     log.warn('Credenciales de Twitter insuficientes para follow engine');
     return { followed: 0, skipped: 0, error: 'missing credentials' };
+  }
+
+  // Check if search API is blocked (402)
+  if (isSearchApiBlocked()) {
+    log.info('Twitter Search API bloqueada (402) — skipping follow engine');
+    return { followed: 0, skipped: 0, reason: 'api_blocked' };
   }
 
   const todayLog = getTodayLog();

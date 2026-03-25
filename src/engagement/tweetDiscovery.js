@@ -7,6 +7,8 @@
  * con Bearer Token (app-only). Filtra y prioriza por calidad.
  */
 
+const fs   = require('fs');
+const path = require('path');
 const { TwitterApi } = require('twitter-api-v2');
 const { config }     = require('../config');
 const { createModuleLogger } = require('../utils/logger');
@@ -15,13 +17,14 @@ const { isSearchApiBlocked, markSearchApiBlocked } = require('../narrative/twitt
 
 const log = createModuleLogger('TweetDiscovery');
 
+const DISCOVERY_CACHE_FILE = path.join(process.cwd(), 'data', 'discovery_cache.json');
+
 // ─── Queries de búsqueda ────────────────────────────────────────────────────────
 
+// Consolidated from 5 to 3 broader queries to save API reads (cached per day)
 const SEARCH_QUERIES = [
-  '(Bittensor OR TAO) -is:retweet lang:en min_faves:5',
-  '("AI crypto" OR "crypto AI" OR "AI agents" crypto) -is:retweet lang:en min_faves:5',
-  '("Render Network" OR RNDR OR "render token") crypto -is:retweet lang:en min_faves:5',
-  '(SingularityNET OR AGIX OR "Fetch.ai" OR FET) -is:retweet lang:en min_faves:5',
+  '(Bittensor OR TAO OR "AI agents" OR "AI crypto") -is:retweet lang:en min_faves:5',
+  '(RNDR OR FET OR AGIX OR "Render Network" OR "SingularityNET") crypto -is:retweet lang:en min_faves:5',
   '("decentralized AI" OR "on-chain AI" OR "AI infrastructure") crypto -is:retweet lang:en min_faves:5',
 ];
 
@@ -102,6 +105,20 @@ async function discoverTweets(excludeTweetIds = []) {
     log.info('Twitter Search API bloqueada (402) — discovery deshabilitado hasta reset');
     return [];
   }
+
+  // ── Day-cache: only search once per day (saves ~5 reads/session) ──────────
+  try {
+    if (fs.existsSync(DISCOVERY_CACHE_FILE)) {
+      const cache = JSON.parse(fs.readFileSync(DISCOVERY_CACHE_FILE, 'utf8'));
+      const today = new Date().toISOString().split('T')[0];
+      if (cache.date === today && cache.tweets?.length > 0) {
+        const excludeSet = new Set(excludeTweetIds);
+        const filtered = cache.tweets.filter(t => !excludeSet.has(t.id));
+        log.info(`Using cached discovery tweets (${filtered.length} available from today)`);
+        return filtered;
+      }
+    }
+  } catch {}
 
   const client       = new TwitterApi(bearerToken);
   const excludeSet   = new Set(excludeTweetIds);
@@ -191,6 +208,21 @@ async function discoverTweets(excludeTweetIds = []) {
   const ranked = allCandidates
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_TWEETS_TOTAL);
+
+  // Save to day-cache
+  if (ranked.length > 0) {
+    try {
+      fs.mkdirSync(path.dirname(DISCOVERY_CACHE_FILE), { recursive: true });
+      fs.writeFileSync(DISCOVERY_CACHE_FILE, JSON.stringify({
+        date: new Date().toISOString().split('T')[0],
+        savedAt: new Date().toISOString(),
+        tweets: ranked,
+      }, null, 2));
+      log.info(`Saved ${ranked.length} discovery tweets to day-cache`);
+    } catch (err) {
+      log.warn(`Error saving discovery cache: ${err.message}`);
+    }
+  }
 
   log.info(`Discovery completado: ${ranked.length} candidatos rankeados`);
   return ranked;
