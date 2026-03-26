@@ -20,6 +20,7 @@ const fs   = require('fs-extra');
 const path = require('path');
 const { TwitterApi } = require('twitter-api-v2');
 const { createModuleLogger } = require('./logger');
+const { syncTokensToRailway } = require('./railwaySync');
 
 const log = createModuleLogger('TokenManager');
 
@@ -154,6 +155,13 @@ async function doRefresh(refreshToken) {
     };
 
     await saveTokens(tokens);
+
+    // Sincronizar con Railway env vars para que sobrevivan redeploys
+    await syncTokensToRailway(newAccessToken, tokens.refreshToken);
+
+    // También actualizar process.env en memoria
+    process.env.TWITTER_OAUTH2_ACCESS_TOKEN  = newAccessToken;
+    process.env.TWITTER_OAUTH2_REFRESH_TOKEN = tokens.refreshToken;
 
     _cachedTokens = tokens;
     _cachedClient = client;
