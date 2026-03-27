@@ -12,6 +12,35 @@ const log = createModuleLogger('MarketData');
 // ─── Cache de OHLC del día (OHLC no cambia entre runs, solo precios) ─────────
 
 const OHLC_CACHE_FILE = path.join(process.cwd(), 'data', 'ohlc_cache.json');
+const OVERVIEW_CACHE_FILE = path.join(process.cwd(), 'data', 'overview_cache.json');
+
+// ─── Cache de Market Overview (evita llamadas repetidas en el mismo día) ─────
+
+function loadOverviewCache() {
+  try {
+    if (!fs.existsSync(OVERVIEW_CACHE_FILE)) return null;
+    const data = JSON.parse(fs.readFileSync(OVERVIEW_CACHE_FILE, 'utf8'));
+    const cacheAge = (Date.now() - new Date(data.savedAt).getTime()) / 60000; // minutos
+    const maxAge = config.coingecko.overviewCacheMinutes || 60;
+    if (cacheAge < maxAge && data.overview && data.overview.length > 0) {
+      log.info(`Market overview cache válido (${Math.round(cacheAge)} min old, max ${maxAge} min)`);
+      return data.overview;
+    }
+    return null;
+  } catch { return null; }
+}
+
+function saveOverviewCache(overview) {
+  try {
+    const dir = path.dirname(OVERVIEW_CACHE_FILE);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(OVERVIEW_CACHE_FILE, JSON.stringify({
+      savedAt: new Date().toISOString(),
+      overview,
+    }, null, 2));
+    log.info('Market overview cache guardado');
+  } catch (e) { log.warn(`No se pudo guardar overview cache: ${e.message}`); }
+}
 
 function loadOhlcCache() {
   try {
@@ -54,7 +83,14 @@ const cgClient = axios.create({
  * @returns {Promise<Array>}
  */
 async function fetchAIMarketOverview() {
-  log.info('Obteniendo overview de mercado AI...');
+  // Intentar cache primero (evita llamadas repetidas entre runs del mismo día)
+  const cached = loadOverviewCache();
+  if (cached) {
+    log.info(`Usando overview cache (${cached.length} tokens)`);
+    return cached;
+  }
+
+  log.info('Obteniendo overview de mercado AI (fresh)...');
 
   const result = await withRetry(
     async () => {
@@ -74,8 +110,13 @@ async function fetchAIMarketOverview() {
     { label: 'fetchAIMarketOverview', ...config.retry }
   );
 
-  log.info(`Obtenidos ${result.length} tokens de la categoría AI`);
-  return result.map(normalizeMarketToken);
+  const normalized = result.map(normalizeMarketToken);
+  log.info(`Obtenidos ${normalized.length} tokens de la categoría AI`);
+
+  // Guardar en cache
+  saveOverviewCache(normalized);
+
+  return normalized;
 }
 
 /**

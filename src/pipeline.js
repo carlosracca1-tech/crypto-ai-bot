@@ -51,6 +51,59 @@ try { getCallbackTweet     = require('./context/callbackEngine').getCallbackTwee
 
 const log = createModuleLogger('Pipeline');
 
+// ─── Local Quality Check (gratis — reemplaza GPT quality gate) ──────────────
+
+/**
+ * Validación de calidad por reglas, sin llamar a GPT.
+ * Costo: $0. Detecta problemas obvios antes de publicar.
+ * @param {string} text - Contenido del tweet
+ * @param {string} type - Tipo de tweet
+ * @returns {string[]} - Lista de issues (vacía = ok)
+ */
+function localQualityCheck(text, type) {
+  const issues = [];
+
+  if (!text || text.trim().length === 0) {
+    issues.push('Tweet vacío');
+    return issues;
+  }
+
+  // Longitud
+  if (text.length > 280) issues.push(`Excede 280 chars (${text.length})`);
+  if (text.length < 50)  issues.push(`Muy corto (${text.length} chars)`);
+
+  // Contenido genérico / spam
+  const genericPhrases = [
+    /the future of/i, /game.?changer/i, /this is huge/i,
+    /to the moon/i, /not financial advice/i, /WAGMI/i, /NGMI/i,
+    /buy now/i, /don't miss/i, /last chance/i,
+  ];
+  for (const re of genericPhrases) {
+    if (re.test(text)) {
+      issues.push(`Frase genérica detectada: ${re.source}`);
+      break;
+    }
+  }
+
+  // Debe tener al menos un dato concreto (número, $, %)
+  const hasData = /\d/.test(text) || /\$/.test(text) || /%/.test(text);
+  if (!hasData && type !== 'contrarian') {
+    issues.push('Sin datos concretos (números, $ o %)');
+  }
+
+  // No repetir el mismo emoji más de 3 veces
+  const emojiMatch = text.match(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu);
+  if (emojiMatch && emojiMatch.length > 5) {
+    issues.push(`Demasiados emojis (${emojiMatch.length})`);
+  }
+
+  // Hashtags excesivos
+  const hashtags = (text.match(/#\w+/g) || []).length;
+  if (hashtags > 3) issues.push(`Demasiados hashtags (${hashtags})`);
+
+  return issues;
+}
+
 // ─── Pipeline principal ────────────────────────────────────────────────────────
 
 /**
@@ -145,35 +198,12 @@ async function runPipeline(opts = {}) {
   let narrativeData;
   let aiNarrativeAnalysis = {};
 
-  try {
-    const tweetData = await fetchNarrativeTweets();
-    narrativeData = detectNarratives(tweetData);
+  // COST OPTIMIZATION: Si Twitter reads está deshabilitado (Free tier $0/mes),
+  // skip narrativas completamente. Ahorra ~$100/mes en Twitter API.
+  const skipNarratives = config.twitter.readsDisabled;
 
-    log.info('Analizando narrativas con AI...');
-    try {
-      aiNarrativeAnalysis = await analyzeNarrativesWithAI(narrativeData, technicalAnalyses);
-    } catch (aiErr) {
-      log.error(`Error en análisis AI de narrativas: ${aiErr.message}`);
-      aiNarrativeAnalysis = {
-        overallNarrativeAssessment: 'AI analysis unavailable',
-        keyInsights: [],
-        contentAngles: [],
-      };
-    }
-
-    await saveNarratives({ narrativeData, aiNarrativeAnalysis });
-    pipelineStages.narrative = {
-      status: 'ok',
-      tweets: narrativeData.totalTweets,
-      dominant: narrativeData.dominantNarrative?.narrative,
-      sentiment: narrativeData.sentiment.label,
-    };
-    log.info('ETAPA 3 completada');
-  } catch (err) {
-    log.error(`ETAPA 3 FALLIDA: ${err.message}`);
-    pipelineStages.narrative = { status: 'failed', error: err.message };
-
-    // Fallback mínimo
+  if (skipNarratives) {
+    log.info('ETAPA 3 SKIPPED: Twitter reads disabled (Free tier). Usando fallback neutral.');
     narrativeData = {
       totalTweets: 0,
       sentiment: { label: 'neutral', score: 0, distribution: { positive: 50, negative: 50 } },
@@ -183,6 +213,52 @@ async function runPipeline(opts = {}) {
       queryMetrics: [],
       summary: { leadingNarratives: [], mostMentionedTokens: [], emergingTerms: [], insights: [] },
     };
+    aiNarrativeAnalysis = {
+      overallNarrativeAssessment: 'Skipped — Twitter reads disabled for cost optimization',
+      keyInsights: [],
+      contentAngles: [],
+    };
+    pipelineStages.narrative = { status: 'skipped_reads_disabled' };
+  } else {
+    try {
+      const tweetData = await fetchNarrativeTweets();
+      narrativeData = detectNarratives(tweetData);
+
+      log.info('Analizando narrativas con AI...');
+      try {
+        aiNarrativeAnalysis = await analyzeNarrativesWithAI(narrativeData, technicalAnalyses);
+      } catch (aiErr) {
+        log.error(`Error en análisis AI de narrativas: ${aiErr.message}`);
+        aiNarrativeAnalysis = {
+          overallNarrativeAssessment: 'AI analysis unavailable',
+          keyInsights: [],
+          contentAngles: [],
+        };
+      }
+
+      await saveNarratives({ narrativeData, aiNarrativeAnalysis });
+      pipelineStages.narrative = {
+        status: 'ok',
+        tweets: narrativeData.totalTweets,
+        dominant: narrativeData.dominantNarrative?.narrative,
+        sentiment: narrativeData.sentiment.label,
+      };
+      log.info('ETAPA 3 completada');
+    } catch (err) {
+      log.error(`ETAPA 3 FALLIDA: ${err.message}`);
+      pipelineStages.narrative = { status: 'failed', error: err.message };
+
+      // Fallback mínimo
+      narrativeData = {
+        totalTweets: 0,
+        sentiment: { label: 'neutral', score: 0, distribution: { positive: 50, negative: 50 } },
+        narrativeScores: [],
+        emergingTopics: [],
+        tokenMentions: [],
+        queryMetrics: [],
+        summary: { leadingNarratives: [], mostMentionedTokens: [], emergingTerms: [], insights: [] },
+      };
+    }
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -313,28 +389,43 @@ async function runPipeline(opts = {}) {
     pipelineStages.posting = { status: 'skipped_no_credentials' };
   } else {
     try {
-      // ── Quality gate: evaluar y mejorar tweets antes de publicar ─────────
-      log.info('Ejecutando quality gate en tweets generados...');
-      for (const tweet of generatedContent.tweets) {
-        if (tweet.posted || !tweet.content) continue;
-        try {
-          const generator = () => {
-            // Re-importar generator para el tipo correcto (regeneración con hint)
-            const { generateMarketInsightTweet, generateTechnicalTweet, generateNarrativeTweet,
-                    generateContrarianTweet, generateSystemTweet, TWEET_TYPES } = require('./content/contentGenerator');
-            const map = {
-              [TWEET_TYPES.MARKET_INSIGHT]: generateMarketInsightTweet,
-              [TWEET_TYPES.TECHNICAL_ANALYSIS]: generateTechnicalTweet,
-              [TWEET_TYPES.NARRATIVE_INSIGHT]: generateNarrativeTweet,
-              [TWEET_TYPES.CONTRARIAN]: generateContrarianTweet,
-              [TWEET_TYPES.SYSTEM_THINKING]: generateSystemTweet,
+      // ── Quality gate: validación local (gratis) o GPT (pago) ─────────
+      const qgMode = config.content.qualityGateMode || 'local';
+      log.info(`Quality gate mode: ${qgMode}`);
+
+      if (qgMode === 'gpt') {
+        // GPT quality gate (cuesta ~$0.05-0.10 por tweet)
+        for (const tweet of generatedContent.tweets) {
+          if (tweet.posted || !tweet.content) continue;
+          try {
+            const generator = () => {
+              const { generateMarketInsightTweet, generateTechnicalTweet, generateNarrativeTweet,
+                      generateContrarianTweet, generateSystemTweet, TWEET_TYPES } = require('./content/contentGenerator');
+              const map = {
+                [TWEET_TYPES.MARKET_INSIGHT]: generateMarketInsightTweet,
+                [TWEET_TYPES.TECHNICAL_ANALYSIS]: generateTechnicalTweet,
+                [TWEET_TYPES.NARRATIVE_INSIGHT]: generateNarrativeTweet,
+                [TWEET_TYPES.CONTRARIAN]: generateContrarianTweet,
+                [TWEET_TYPES.SYSTEM_THINKING]: generateSystemTweet,
+              };
+              const fn = map[tweet.type];
+              return fn ? fn(fusionData) : null;
             };
-            const fn = map[tweet.type];
-            return fn ? fn(fusionData) : null;
-          };
-          tweet.content = await qualityGate(tweet.content, tweet.type, generator);
-        } catch (qErr) {
-          log.warn(`Quality gate error for ${tweet.type}: ${qErr.message} — using original`);
+            tweet.content = await qualityGate(tweet.content, tweet.type, generator);
+          } catch (qErr) {
+            log.warn(`Quality gate GPT error for ${tweet.type}: ${qErr.message} — using original`);
+          }
+        }
+      } else {
+        // LOCAL quality gate (gratis — validación por reglas)
+        for (const tweet of generatedContent.tweets) {
+          if (tweet.posted || !tweet.content) continue;
+          const issues = localQualityCheck(tweet.content, tweet.type);
+          if (issues.length > 0) {
+            log.warn(`[${tweet.type}] Quality issues: ${issues.join(', ')}`);
+          } else {
+            log.info(`[${tweet.type}] ✅ Local quality check passed`);
+          }
         }
       }
 
@@ -381,18 +472,8 @@ async function runPipeline(opts = {}) {
         log.info(`ETAPA 6 completada: ${publishedCount} publicados, ${failedCount} fallidos`);
       }
 
-      // ── Delayed performance fetch (non-blocking) ────────────────────────
-      // Fetch metrics 15 minutes after publishing to allow engagement to accumulate
-      if (!dryRun && publishResults.length > 0) {
-        setTimeout(async () => {
-          try {
-            log.info('Running delayed performance fetch (15min after publish)...');
-            await runPerformanceEngine();
-          } catch (perfErr) {
-            log.warn(`Performance fetch error: ${perfErr.message}`);
-          }
-        }, 15 * 60 * 1000); // 15 minutes
-      }
+      // Performance fetch ahora lo maneja el scheduler (1×/día 19:00 ART)
+      // Eliminado el setTimeout de 15min que se perdía en restart de PM2
     } catch (err) {
       log.error(`ETAPA 6 ERROR: ${err.message}`);
       pipelineStages.posting = { status: 'partial_failure', error: err.message };

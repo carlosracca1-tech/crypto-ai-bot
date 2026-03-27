@@ -6,9 +6,12 @@ const config = {
   // ─── OpenAI ────────────────────────────────────────────────────────────────
   openai: {
     apiKey: process.env.OPENAI_API_KEY,
-    model: process.env.OPENAI_MODEL || 'gpt-4o',
+    // GPT-4o-mini: ~10x más barato que GPT-4o, suficiente para tweets de 280 chars
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     imageModel: process.env.OPENAI_IMAGE_MODEL || 'dall-e-3',
-    maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || '1500', 10),
+    maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || '800', 10),
+    // Timeout para evitar que el pipeline se cuelgue si OpenAI no responde
+    requestTimeoutMs: parseInt(process.env.OPENAI_TIMEOUT_MS || '30000', 10),
   },
 
   // ─── Twitter / X ───────────────────────────────────────────────────────────
@@ -18,10 +21,10 @@ const config = {
     accessToken: process.env.TWITTER_ACCESS_TOKEN,
     accessSecret: process.env.TWITTER_ACCESS_SECRET,
     bearerToken: process.env.TWITTER_BEARER_TOKEN,
-    // COST CONTROL: When true, disables ALL Twitter API read calls (search, me, etc.)
-    // Only write calls (tweet, retweet, follow, like) are allowed.
-    // Saves ~$5/day on Twitter API costs.
-    readsDisabled: process.env.TWITTER_READS_DISABLED === 'true',
+    // COST CONTROL: Free tier = solo writes. NO search, NO reads.
+    // Con esto Twitter cuesta $0/mes en vez de $100/mes.
+    // Solo se desactiva si tenés plan Basic ($100/mes) y querés engagement.
+    readsDisabled: process.env.TWITTER_READS_DISABLED !== 'false',  // DEFAULT: true
   },
 
   // ─── CoinGecko ─────────────────────────────────────────────────────────────
@@ -32,6 +35,8 @@ const config = {
     // Delay entre requests normales. Free tier: ~30 req/min → mínimo 2000ms.
     // Recomendado: 2500ms para tener margen. Configurable vía Railway.
     rateLimit: parseInt(process.env.COINGECKO_RATE_LIMIT_MS || '2500', 10),
+    // Cache del market overview (minutos). Evita llamadas repetidas en el mismo día.
+    overviewCacheMinutes: parseInt(process.env.COINGECKO_OVERVIEW_CACHE_MIN || '60', 10),
     // Cooldown extra que se aplica SOLO cuando un token falla con 429.
     // Rompe la cascada: espera que el rate limit window se resetee (~60s)
     // antes de continuar con el siguiente token.
@@ -101,13 +106,14 @@ const config = {
 
   // ─── Contenido ─────────────────────────────────────────────────────────────
   content: {
-    tweetsPerDay: parseInt(process.env.TWEETS_PER_DAY || '6', 10),
-    threadEveryNDays: parseInt(process.env.THREAD_EVERY_N_DAYS || '3', 10),
+    // 3 tweets/día = calidad > cantidad. Bien espaciados, cada uno importa.
+    tweetsPerDay: parseInt(process.env.TWEETS_PER_DAY || '3', 10),
+    threadEveryNDays: parseInt(process.env.THREAD_EVERY_N_DAYS || '7', 10),
     dryRun: process.env.DRY_RUN === 'true',
     manualApproval: process.env.MANUAL_APPROVAL === 'true',
-    // Horarios dinámicos — el scheduler los calcula aleatoriamente cada día
-    // Este array es solo referencia; el scheduler real usa TWEET_WINDOWS
-    postingSpreadHours: [8, 11, 14, 17, 19, 21],
+    // Quality gate: 'local' (gratis, rule-based) o 'gpt' (pago, usa OpenAI)
+    qualityGateMode: process.env.QUALITY_GATE_MODE || 'local',
+    postingSpreadHours: [9, 14, 20],
   },
 
   // ─── Imágenes ──────────────────────────────────────────────────────────────

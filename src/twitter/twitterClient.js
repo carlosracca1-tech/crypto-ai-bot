@@ -17,8 +17,22 @@ const { config }          = require('../config');
 const { createModuleLogger } = require('../utils/logger');
 const { withRetry, sleep }   = require('../utils/retry');
 const { getValidClient, forceRefresh } = require('../utils/tokenManager');
-const { generateChartForToken } = require('../charts/chartGenerator');
 const { getCacheSection }    = require('../storage/twitterCache');
+
+// Lazy import: chartGenerator usa canvas (módulo nativo) que puede no estar
+// disponible en todos los entornos. Se carga solo cuando se necesita generar un chart.
+let _generateChartForToken = null;
+function getChartGenerator() {
+  if (_generateChartForToken === null) {
+    try {
+      _generateChartForToken = require('../charts/chartGenerator').generateChartForToken;
+    } catch (e) {
+      _generateChartForToken = false; // marcamos como no disponible
+      log.warn(`Chart generator no disponible: ${e.message}`);
+    }
+  }
+  return _generateChartForToken || null;
+}
 
 const log = createModuleLogger('TwitterClient');
 
@@ -323,7 +337,9 @@ async function publishTweetsImmediate(tweets, fusionData = null) {
     if (CHART_TYPES.has(tweet.type) && fusionData) {
       try {
         log.info(`Generando chart para tweet ${tweet.type}...`);
-        const chartPath = await generateChartForToken(fusionData);
+        const chartGen = getChartGenerator();
+        if (!chartGen) throw new Error('Chart generator no disponible');
+        const chartPath = await chartGen(fusionData);
 
         if (chartPath) {
           log.info(`Chart generado: ${chartPath}. Subiendo a Twitter...`);
