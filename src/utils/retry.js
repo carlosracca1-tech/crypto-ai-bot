@@ -18,8 +18,14 @@ const NON_RETRYABLE_CODES = ['402', '401', '403'];
 
 function isNonRetryableError(err) {
   const msg = err.message || '';
-  const code = String(err.code || err.statusCode || '');
+  const code = String(err.code || err.statusCode || err.response?.status || '');
   return NON_RETRYABLE_CODES.some(c => msg.includes(c) || code === c);
+}
+
+function isRateLimitError(err) {
+  const msg = err.message || '';
+  const code = String(err.code || err.statusCode || err.response?.status || '');
+  return msg.includes('429') || code === '429';
 }
 
 async function withRetry(fn, opts = {}) {
@@ -28,6 +34,7 @@ async function withRetry(fn, opts = {}) {
     baseDelayMs = 2000,
     backoffMultiplier = 2,
     label = 'operation',
+    rateLimitCooldownMs = 15000,
   } = opts;
 
   let lastError;
@@ -50,11 +57,20 @@ async function withRetry(fn, opts = {}) {
         throw err;
       }
 
-      const delay = baseDelayMs * Math.pow(backoffMultiplier, attempt - 1);
-      log.warn(`${label} falló en intento ${attempt}/${maxRetries}. Reintentando en ${delay}ms`, {
-        error: err.message,
-      });
-      await sleep(delay);
+      // Rate limit (429): usar cooldown más largo para esperar el reset window
+      if (isRateLimitError(err)) {
+        const cooldown = rateLimitCooldownMs * attempt;
+        log.warn(`${label} hit rate limit (429) en intento ${attempt}/${maxRetries}. Cooldown ${cooldown}ms`, {
+          error: err.message,
+        });
+        await sleep(cooldown);
+      } else {
+        const delay = baseDelayMs * Math.pow(backoffMultiplier, attempt - 1);
+        log.warn(`${label} falló en intento ${attempt}/${maxRetries}. Reintentando en ${delay}ms`, {
+          error: err.message,
+        });
+        await sleep(delay);
+      }
     }
   }
 

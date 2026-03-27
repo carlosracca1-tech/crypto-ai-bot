@@ -27,6 +27,7 @@ const { runDailyHealthCheck } = require('../src/alerts/healthCheck');
 const { monitored, installGlobalHandlers } = require('../src/alerts/errorMonitor');
 const { config }              = require('../src/config');
 const { findRetweetCandidates, retweet } = require('../src/twitter/twitterClient');
+const { runLightEngagement }             = require('../src/engagement/lightEngagement');
 
 // ─── Adaptive systems ─────────────────────────────────────────────────────────
 let runLiveAdjuster      = async () => {};
@@ -62,27 +63,25 @@ const TWEET_WINDOWS = [
   { startH: 10, startM: 30, endH: 12, endM: 0,  type: 'fundamental_insight', label: '🔬 Fundamental Insight'     },
   { startH: 13, startM: 30, endH: 15, endM: 0,  type: 'technical_analysis',  label: '📈 Technical Analysis (+chart)' },
   { startH: 16, startM: 30, endH: 18, endM: 0,  type: 'contrarian',          label: '⚡ Contrarian Take'         },
-  { startH: 19, startM: 0,  endH: 20, endM: 30, type: 'quote_tweet',         label: '💬 Quote Tweet'             },
+  // quote_tweet removido — ahora lo hace lightEngagement con 1 sola búsqueda
   { startH: 21, startM: 0,  endH: 22, endM: 30, type: 'market_insight',      label: '📊 Market Insight (Eve)'    },
 ];
 
-// ─── ENGAGEMENT WINDOWS (ART) ─────────────────────────────────────────────────
-
-const ENGAGEMENT_WINDOWS = [
-  { startH: 9,  startM: 45, endH: 10, endM: 45, label: '💬 Engagement AM' },
-  { startH: 17, startM: 0,  endH: 18, endM: 30, label: '💬 Engagement PM' },
+// ─── LIGHT ENGAGEMENT (ART) — 2 sesiones/día, 1 búsqueda cada una ────────────
+//
+// Cada sesión hace:  1 search → top followers → quote tweet #1 + reply #2
+// Costo total: 2 API reads + 4 writes por día = ULTRA BARATO
+//
+const LIGHT_ENGAGEMENT_WINDOWS = [
+  { startH: 11, startM: 0,  endH: 12, endM: 0,  label: '🎯 Light Engagement AM' },
+  { startH: 18, startM: 0,  endH: 19, endM: 30, label: '🎯 Light Engagement PM' },
 ];
 
-// ─── RETWEET WINDOWS (ART) ──────────────────────────────────────────────────────
-
-// Reduced from 2 to 1 session/day to save 2 API reads
-const RETWEET_WINDOWS = [
-  { startH: 15, startM: 0,  endH: 16, endM: 0,  label: '🔁 Retweet' },
-];
-
-// ─── FOLLOW WINDOW (ART) ──────────────────────────────────────────────────────
-
-const FOLLOW_WINDOW = { startH: 12, startM: 0, endH: 13, endM: 30, label: '🔍 Follow Session' };
+// ─── LEGACY (deshabilitados para ahorrar API) ────────────────────────────────
+// Se mantienen definidos por si se quieren reactivar en el futuro
+const ENGAGEMENT_WINDOWS = [];   // was: 2 sessions × 15 replies = 30 writes + search reads
+const RETWEET_WINDOWS    = [];   // was: 1 session = 2 search reads + 1 write
+const FOLLOW_WINDOW      = null; // was: 2 search reads + 15 follow writes
 
 // ─── Constantes ────────────────────────────────────────────────────────────────
 
@@ -152,52 +151,20 @@ function scheduleDaySlots() {
 
   log.info('─'.repeat(60));
 
-  // ── Engagement slots ────────────────────────────────────────────────────────
-  for (const win of ENGAGEMENT_WINDOWS) {
+  // ── Light Engagement slots (reemplaza engagement + retweet + follow + quote) ─
+  for (const win of LIGHT_ENGAGEMENT_WINDOWS) {
     const { hours, minutes } = randomTimeInWindow(win.startH, win.startM, win.endH, win.endM);
     const fireUTC = artTimeToUTC(hours, minutes);
     const delayMs = fireUTC - now;
 
-    schedule.slots.push({ label: win.label, type: 'engagement', timeART: fmt(hours, minutes), status: delayMs > 0 ? 'scheduled' : 'past' });
+    schedule.slots.push({ label: win.label, type: 'light_engagement', timeART: fmt(hours, minutes), status: delayMs > 0 ? 'scheduled' : 'past' });
 
     if (delayMs <= 0) {
       log.info(`  ⏭  SKIP  ${win.label.padEnd(24)} ${fmt(hours, minutes)} ART`);
       continue;
     }
     log.info(`  ✓  ${win.label.padEnd(24)} ${fmt(hours, minutes)} ART  (+${Math.round(delayMs / 60000)} min)`);
-    activeTimers.push(setTimeout(() => executeEngagementSlot(win.label), delayMs));
-  }
-
-  // ── Retweet slots ──────────────────────────────────────────────────────────
-  for (const win of RETWEET_WINDOWS) {
-    const { hours, minutes } = randomTimeInWindow(win.startH, win.startM, win.endH, win.endM);
-    const fireUTC = artTimeToUTC(hours, minutes);
-    const delayMs = fireUTC - now;
-
-    schedule.slots.push({ label: win.label, type: 'retweet', timeART: fmt(hours, minutes), status: delayMs > 0 ? 'scheduled' : 'past' });
-
-    if (delayMs <= 0) {
-      log.info(`  ⏭  SKIP  ${win.label.padEnd(24)} ${fmt(hours, minutes)} ART`);
-      continue;
-    }
-    log.info(`  ✓  ${win.label.padEnd(24)} ${fmt(hours, minutes)} ART  (+${Math.round(delayMs / 60000)} min)`);
-    activeTimers.push(setTimeout(() => executeRetweetSlot(win.label), delayMs));
-  }
-
-  // ── Follow slot ─────────────────────────────────────────────────────────────
-  {
-    const { hours, minutes } = randomTimeInWindow(FOLLOW_WINDOW.startH, FOLLOW_WINDOW.startM, FOLLOW_WINDOW.endH, FOLLOW_WINDOW.endM);
-    const fireUTC = artTimeToUTC(hours, minutes);
-    const delayMs = fireUTC - now;
-
-    schedule.slots.push({ label: FOLLOW_WINDOW.label, type: 'follow', timeART: fmt(hours, minutes), status: delayMs > 0 ? 'scheduled' : 'past' });
-
-    if (delayMs > 0) {
-      log.info(`  ✓  ${FOLLOW_WINDOW.label.padEnd(24)} ${fmt(hours, minutes)} ART  (+${Math.round(delayMs / 60000)} min)`);
-      activeTimers.push(setTimeout(() => executeFollowSlot(), delayMs));
-    } else {
-      log.info(`  ⏭  SKIP  ${FOLLOW_WINDOW.label.padEnd(24)} ${fmt(hours, minutes)} ART`);
-    }
+    activeTimers.push(setTimeout(() => executeLightEngagementSlot(win.label), delayMs));
   }
 
   log.info('─'.repeat(60));
@@ -234,15 +201,20 @@ async function executeTweetSlot(label, tweetType) {
 }
 
 async function executeEngagementSlot(label) {
+  // LEGACY — deshabilitado para ahorrar API. Usar executeLightEngagementSlot
+  log.info(`${label} (legacy) — skipped, usando light engagement`);
+}
+
+async function executeLightEngagementSlot(label) {
   if (running[label]) { log.warn(`${label} ya corre — skip`); return; }
   running[label] = true;
 
   const now = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
-  log.info(`\n${'═'.repeat(60)}\nENGAGEMENT: ${label} | ${now}\n${'═'.repeat(60)}`);
+  log.info(`\n${'═'.repeat(60)}\nLIGHT ENGAGEMENT: ${label} | ${now}\n${'═'.repeat(60)}`);
 
   await monitored(`Scheduler:${label}`, async () => {
-    const result = await runEngagement({ dryRun: config.content.dryRun });
-    log.info(`✓ ${label} | Replies: ${result.posted || 0} | Skipped: ${result.skipped || 0}`);
+    const result = await runLightEngagement({ dryRun: config.content.dryRun });
+    log.info(`✓ ${label} | Quote: ${result.quoteTweet ? '✅' : '❌'} | Reply: ${result.reply ? '✅' : '❌'} | API reads: ${result.searchCost}`);
   }, { slot: label });
 
   running[label] = false;
@@ -326,10 +298,18 @@ function start() {
   // Instalar handlers globales de errores
   installGlobalHandlers();
 
+  // Limpiar bloqueo de Search API al arrancar (por si se compraron créditos y se hizo redeploy)
+  try {
+    const { clearSearchApiBlock } = require('../src/narrative/twitterScraper');
+    if (clearSearchApiBlock()) {
+      log.info('🔓 Bloqueo de Search API limpiado al arrancar');
+    }
+  } catch (e) { /* no-op */ }
+
   log.info('═'.repeat(60));
-  log.info('AI CRYPTO BOT — SISTEMA UNIFICADO ACTIVO');
+  log.info('AI CRYPTO BOT — SISTEMA UNIFICADO ACTIVO (COST-OPTIMIZED)');
   log.info(`Dry run: ${config.content.dryRun}`);
-  log.info(`Tweets/día: ${TWEET_WINDOWS.length} | Engagement: ${ENGAGEMENT_WINDOWS.length} sesiones | 1 follow session`);
+  log.info(`Tweets/día: ${TWEET_WINDOWS.length} | Light Engagement: ${LIGHT_ENGAGEMENT_WINDOWS.length}× (1 search + 1 quote + 1 reply each)`);
   log.info('═'.repeat(60));
 
   // ── Slots dinámicos del día ─────────────────────────────────────────────────
@@ -337,10 +317,9 @@ function start() {
 
   // ── Reset diario 00:05 ART (03:05 UTC) ─────────────────────────────────────
   cron.schedule('5 3 * * *', async () => {
-    log.info('\n🔄 Reset diario — recalculando horarios + refreshing cache...');
+    log.info('\n🔄 Reset diario — recalculando horarios...');
     scheduleDaySlots();
-    // Pre-fetch daily cache for the new day
-    await monitored('TwitterCache:Reset', () => refreshDailyCache({ force: true }), {}, false);
+    // Cache refresh DESHABILITADO — lightEngagement hace su propia búsqueda (ahorra ~13 API reads)
   }, { scheduled: true, timezone: 'UTC' });
 
   // ── Threads semanales: Lunes 10:00 ART + Jueves 15:00 ART ──────────────────
@@ -381,17 +360,10 @@ function start() {
   }
   log.info('  ⚡ Live Adjuster: cada ~2.5h');
 
-  // ── Twitter Daily Cache: once per day at 07:30 ART (10:30 UTC) ─────────────
-  // Fetches all search queries once and caches for the whole day.
-  // All modules (engagement, follow, retweet, quote) read from this cache.
-  cron.schedule('30 10 * * *', async () => {
-    log.info('\n🗄️  Daily Twitter Cache — refreshing all search data...');
-    await monitored('TwitterCache', () => refreshDailyCache({ force: true }), {}, false);
-  }, { scheduled: true, timezone: 'UTC' });
-  log.info('  🗄️  Twitter Cache: 1×/día (07:30 ART — before first slots)');
-
-  // Also refresh cache on daily reset (in case bot restarts mid-day)
-  // This is a no-op if cache already exists for today (unless forced above)
+  // ── Twitter Daily Cache: DESHABILITADO ──────────────────────────────────────
+  // Antes: 13 search queries × 2 veces/día = ~26 API reads/día
+  // Ahora: lightEngagement hace 1 search × 2 veces/día = 2 API reads/día
+  log.info('  🗄️  Twitter Cache: DESHABILITADO (lightEngagement busca directo)');
 
   // ── Performance Engine: 1×/día at 22:00 UTC (19:00 ART) ──────────────────
   // Reduced from 3x to 1x — tweets need time to accumulate metrics anyway

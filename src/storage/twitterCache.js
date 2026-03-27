@@ -185,6 +185,12 @@ async function searchQuery(client, query, maxResults = 15, expandUsers = false) 
  * @param {boolean} opts.force - Force refresh even if already searched today
  */
 async function refreshDailyCache(opts = {}) {
+  // COST CONTROL: Skip all Twitter API reads when disabled
+  if (config.twitter.readsDisabled) {
+    log.info('⚡ TWITTER_READS_DISABLED=true — skipping daily cache refresh (0 API calls)');
+    return getDailyCache() || {};
+  }
+
   // Check if already searched today (DB check)
   if (!opts.force && db && db.wasSearchedToday('all')) {
     log.info('Already searched today (DB) — skipping refresh');

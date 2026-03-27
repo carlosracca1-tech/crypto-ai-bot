@@ -96,6 +96,12 @@ function dailyLimitReached(log) {
  * @returns {Promise<object>} Resumen de ejecución
  */
 async function runEngagement(opts = {}) {
+  // COST CONTROL: Skip when reads disabled (needs search to find tweets to engage with)
+  if (config.twitter.readsDisabled) {
+    log.info('⚡ READS_DISABLED — skipping engagement module (requires search)');
+    return { replied: 0, skipped: 'reads_disabled' };
+  }
+
   const dryRun = opts.dryRun ?? config.content.dryRun;
 
   log.info('═'.repeat(55));

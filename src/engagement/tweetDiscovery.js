@@ -94,6 +94,12 @@ function scoreTweet(tweet, author) {
  * @returns {Promise<Array>}
  */
 async function discoverTweets(excludeTweetIds = []) {
+  // COST CONTROL: Skip search when reads disabled
+  if (config.twitter.readsDisabled) {
+    log.info('⚡ READS_DISABLED — skipping tweet discovery');
+    return [];
+  }
+
   const bearerToken = config.twitter.bearerToken;
 
   if (!bearerToken) {

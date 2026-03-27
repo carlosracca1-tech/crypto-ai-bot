@@ -18,6 +18,10 @@ const config = {
     accessToken: process.env.TWITTER_ACCESS_TOKEN,
     accessSecret: process.env.TWITTER_ACCESS_SECRET,
     bearerToken: process.env.TWITTER_BEARER_TOKEN,
+    // COST CONTROL: When true, disables ALL Twitter API read calls (search, me, etc.)
+    // Only write calls (tweet, retweet, follow, like) are allowed.
+    // Saves ~$5/day on Twitter API costs.
+    readsDisabled: process.env.TWITTER_READS_DISABLED === 'true',
   },
 
   // ─── CoinGecko ─────────────────────────────────────────────────────────────

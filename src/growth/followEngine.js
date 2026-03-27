@@ -94,6 +94,12 @@ function wasRecentlyFollowed(userId, allTimeLog) {
 // ─── Main engine ───────────────────────────────────────────────────────────────
 
 async function runFollowEngine(opts = {}) {
+  // COST CONTROL: Skip when reads disabled (needs search to find users)
+  if (config.twitter.readsDisabled) {
+    log.info('⚡ READS_DISABLED — skipping follow engine (requires search)');
+    return { followed: 0, skipped: 'reads_disabled' };
+  }
+
   const dryRun = opts.dryRun ?? config.content.dryRun;
 
   log.info('═'.repeat(55));

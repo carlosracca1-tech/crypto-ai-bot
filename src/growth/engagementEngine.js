@@ -426,6 +426,12 @@ async function engageAfterFollow(userId, userHandle) {
  * @param {object} opts
  */
 async function runEngagementEngine(fusionData = null, opts = {}) {
+  // COST CONTROL: Skip when reads disabled (needs search to find tweets)
+  if (config.twitter.readsDisabled) {
+    log.info('⚡ READS_DISABLED — skipping engagement engine (requires search)');
+    return { interactions: 0, skipped: 'reads_disabled' };
+  }
+
   const { dryRun = config.content.dryRun, maxInteractions = MAX_INTERACTIONS_PER_DAY } = opts;
 
   log.info('Starting engagement engine session...');

@@ -61,8 +61,19 @@ function markSearchApiBlocked(reason = '402 Payment Required') {
     blocked:   true,
     blockedAt: new Date().toISOString(),
     reason,
-    ttlHours:  24,
+    ttlHours:  2,          // ← 2h en vez de 24h (permite recuperarse rápido si se compran créditos)
   });
+}
+
+/** Limpia manualmente el bloqueo (útil al arrancar o tras comprar créditos) */
+function clearSearchApiBlock() {
+  const status = loadApiStatus();
+  if (status && status.blocked) {
+    log.info('Limpiando bloqueo de Twitter Search API manualmente');
+    saveApiStatus({ blocked: false });
+    return true;
+  }
+  return false;
 }
 
 // ─── Cache de narrativas del día (evita repetir búsquedas 6x/día) ──────────
@@ -114,6 +125,12 @@ function getTwitterClient() {
  * @returns {Promise<Array>}
  */
 async function searchRecentTweets(query, maxResults = 50) {
+  // COST CONTROL: Skip all Twitter API reads when disabled
+  if (config.twitter.readsDisabled) {
+    log.info(`⚡ READS_DISABLED — skipping search: "${query.slice(0, 40)}..."`);
+    return [];
+  }
+
   const client = getTwitterClient();
 
   const lookbackHours = config.narrative.lookbackHours;
@@ -396,4 +413,5 @@ module.exports = {
   fetchTokenMentions,
   isSearchApiBlocked,
   markSearchApiBlocked,
+  clearSearchApiBlock,
 };

@@ -16,7 +16,7 @@ const { TwitterApi } = require('twitter-api-v2');
 const { config }          = require('../config');
 const { createModuleLogger } = require('../utils/logger');
 const { withRetry, sleep }   = require('../utils/retry');
-const { getValidClient }     = require('../utils/tokenManager');
+const { getValidClient, forceRefresh } = require('../utils/tokenManager');
 const { generateChartForToken } = require('../charts/chartGenerator');
 const { getCacheSection }    = require('../storage/twitterCache');
 
@@ -27,6 +27,16 @@ let _cachedUserId = null;
 
 async function getCachedUserId(client) {
   if (_cachedUserId) return _cachedUserId;
+  // COST CONTROL: Skip v2.me() API call when reads disabled
+  if (config.twitter.readsDisabled) {
+    // Use hardcoded user ID from the access token (format: userId-randomChars)
+    const tokenUserId = config.twitter.accessToken?.split('-')[0];
+    if (tokenUserId) {
+      _cachedUserId = tokenUserId;
+      log.info(`User ID from token (no API call): ${_cachedUserId}`);
+      return _cachedUserId;
+    }
+  }
   const me = await client.v2.me();
   _cachedUserId = me.data.id;
   log.info(`User ID cached: ${_cachedUserId}`);
@@ -42,6 +52,11 @@ async function getPostingClient() {
 // ─── Verificación de identidad ────────────────────────────────────────────────
 
 async function verifyCredentials() {
+  // COST CONTROL: Skip v2.me() when reads disabled
+  if (config.twitter.readsDisabled) {
+    log.info('⚡ READS_DISABLED — skipping verifyCredentials');
+    return { id: config.twitter.accessToken?.split('-')[0], username: 'TheProtocoMind' };
+  }
   const client = await getPostingClient();
   const me = await client.v2.me({ 'user.fields': ['username', 'public_metrics'] });
   log.info(`Autenticado como @${me.data.username}`);
@@ -70,13 +85,33 @@ async function uploadMedia(filePath) {
     return null;
   }
 
+  // Intento 1: OAuth 1.0a (método estándar para media upload v1.1)
   try {
     const oauthClient = new TwitterApi({ appKey, appSecret, accessToken, accessSecret });
     const mediaId = await oauthClient.v1.uploadMedia(filePath);
     log.info(`Media subida correctamente. media_id: ${mediaId}`);
     return String(mediaId);
   } catch (err) {
-    log.error(`Error subiendo media: ${err.message}`);
+    const is401 = err.code === 401 || err.message?.includes('401');
+    if (is401) {
+      log.error(`uploadMedia OAuth 1.0a 401 — tokens probablemente revocados. Regenerar TWITTER_ACCESS_TOKEN y TWITTER_ACCESS_SECRET en el Developer Portal.`);
+    } else {
+      log.error(`Error subiendo media: ${err.message}`);
+    }
+
+    // Intento 2: OAuth 2.0 user context como fallback
+    if (is401) {
+      try {
+        log.info('uploadMedia: intentando fallback con OAuth 2.0 client...');
+        const oauth2Client = await getValidClient();
+        const mediaId = await oauth2Client.v1.uploadMedia(filePath);
+        log.info(`Media subida via OAuth 2.0 fallback. media_id: ${mediaId}`);
+        return String(mediaId);
+      } catch (fallbackErr) {
+        log.error(`uploadMedia OAuth 2.0 fallback también falló: ${fallbackErr.message}`);
+      }
+    }
+
     return null;
   }
 }
@@ -102,7 +137,7 @@ async function postTweet(text, mediaId = null, replyToId = null, quoteTweetId = 
     log.warn(`Tweet truncado a ${text.length} chars`);
   }
 
-  const client = await getPostingClient();
+  let client = await getPostingClient();
 
   const payload = { text };
   if (replyToId)    payload.reply          = { in_reply_to_tweet_id: replyToId };
@@ -111,19 +146,37 @@ async function postTweet(text, mediaId = null, replyToId = null, quoteTweetId = 
 
   log.info(`postTweet payload: textLen=${text.length} mediaId=${mediaId || 'none'} quoteTweetId=${quoteTweetId || 'none'}`);
 
-  const result = await withRetry(
-    async () => {
+  // Primera tentativa
+  let result;
+  try {
+    const response = await client.v2.tweet(payload);
+    result = response.data;
+  } catch (firstErr) {
+    const errCode = String(firstErr.code || firstErr.statusCode || '');
+    const is401 = errCode === '401' || firstErr.message?.includes('401');
+    // 400 puede indicar token expirado/inválido en OAuth2 (Twitter devuelve 400 en vez de 401 a veces)
+    const is400 = errCode === '400' || firstErr.message?.includes('status code 400');
+    const isAuthLike = is401 || is400;
+
+    if (isAuthLike) {
+      // Token expirado/invalido — force refresh y reintentar una vez
+      log.warn(`postTweet ${errCode || '400/401'} detectado — forzando refresh de OAuth 2.0 token...`);
       try {
-        const response = await client.v2.tweet(payload);
-        return response.data;
-      } catch (apiErr) {
-        const detail = apiErr.data ? JSON.stringify(apiErr.data) : (apiErr.errors ? JSON.stringify(apiErr.errors) : '');
-        log.error(`Twitter API error ${apiErr.code || '?'}: ${apiErr.message}${detail ? ` | ${detail}` : ''}`);
-        throw apiErr;
+        client = await forceRefresh();
+        log.info('Token refrescado exitosamente. Reintentando tweet...');
+        const retryResponse = await client.v2.tweet(payload);
+        result = retryResponse.data;
+      } catch (refreshErr) {
+        const detail = refreshErr.data ? JSON.stringify(refreshErr.data) : '';
+        log.error(`postTweet falló incluso después de refresh: ${refreshErr.message}${detail ? ` | ${detail}` : ''}`);
+        throw refreshErr;
       }
-    },
-    { label: 'postTweet', ...config.retry }
-  );
+    } else {
+      const detail = firstErr.data ? JSON.stringify(firstErr.data) : (firstErr.errors ? JSON.stringify(firstErr.errors) : '');
+      log.error(`Twitter API error ${firstErr.code || '?'}: ${firstErr.message}${detail ? ` | ${detail}` : ''}`);
+      throw firstErr;
+    }
+  }
 
   log.info(`✅ Tweet publicado! ID: ${result.id} | ${text.length} chars${mediaId ? ' | con imagen' : ''}${quoteTweetId ? ' | quote tweet' : ''}`);
   return result;
@@ -139,6 +192,11 @@ async function postTweet(text, mediaId = null, replyToId = null, quoteTweetId = 
  * @returns {Promise<Array>} Lista de tweet objects con id, text, public_metrics
  */
 async function searchTweetsForToken(symbol) {
+  // COST CONTROL: Skip search when reads disabled
+  if (config.twitter.readsDisabled) {
+    log.info(`⚡ READS_DISABLED — skipping searchTweetsForToken($${symbol})`);
+    return [];
+  }
   // ── Try unified daily cache first (0 API calls) ───────────────────────
   const cachedQuotes = getCacheSection('quoteByToken');
   if (cachedQuotes && cachedQuotes[symbol.toUpperCase()]) {
@@ -380,6 +438,12 @@ async function unretweet(tweetId) {
  * @returns {Promise<Array>} Lista de tweets candidatos para RT
  */
 async function findRetweetCandidates(opts = {}) {
+  // COST CONTROL: Skip search when reads disabled
+  if (config.twitter.readsDisabled) {
+    log.info('⚡ READS_DISABLED — skipping findRetweetCandidates');
+    return [];
+  }
+
   const { minLikes = 10, maxResults = 5 } = opts;
 
   // ── Try unified daily cache first (0 API calls) ───────────────────────

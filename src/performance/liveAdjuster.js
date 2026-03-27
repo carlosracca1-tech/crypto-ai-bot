@@ -276,13 +276,8 @@ Format:
 
 async function publishFollowUp(content) {
   try {
-    const { TwitterApi } = require('twitter-api-v2');
-    const client = new TwitterApi({
-      appKey:       config.twitter.appKey,
-      appSecret:    config.twitter.appSecret,
-      accessToken:  config.twitter.accessToken,
-      accessSecret: config.twitter.accessSecret,
-    });
+    const { getValidClient } = require('../utils/tokenManager');
+    const client = await getValidClient();
     const result = await client.v2.tweet(content);
     return result.data?.id || null;
   } catch (err) {

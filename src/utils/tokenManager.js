@@ -171,12 +171,13 @@ async function doRefresh(refreshToken) {
     return { client, ...tokens };
   } catch (err) {
     // ─── ALERTA: el refresh falló ──────────────────────────────────────
-    const isAuthError = err.message?.includes('401') ||
+    const isAuthError = err.message?.includes('400') ||
+                        err.message?.includes('401') ||
                         err.message?.includes('403') ||
                         err.message?.includes('invalid_request') ||
                         err.message?.includes('invalid_grant') ||
                         err.message?.includes('token') ||
-                        err.code === 401 || err.code === 403;
+                        err.code === 400 || err.code === 401 || err.code === 403;
 
     if (isAuthError) {
       await sendTokenExpirationAlert(`Refresh falló: ${err.message}`);

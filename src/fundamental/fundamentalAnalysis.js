@@ -32,7 +32,13 @@ const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
 
 async function fetchCoinDetails(coinId) {
   try {
-    const url    = `${COINGECKO_BASE}/coins/${coinId}`;
+    // Rate limiting — respetar el mismo rate limit que marketData.js
+    await sleep(config.coingecko.rateLimit);
+
+    const baseUrl = config.coingecko.apiKey
+      ? config.coingecko.proBaseUrl
+      : config.coingecko.baseUrl;
+    const url    = `${baseUrl}/coins/${coinId}`;
     const params = {
       localization: false,
       tickers:      false,
@@ -41,11 +47,19 @@ async function fetchCoinDetails(coinId) {
       developer_data: true,
       sparkline:    false,
     };
-    if (config.coingecko.apiKey) params['x-cg-demo-api-key'] = config.coingecko.apiKey;
+    const headers = config.coingecko.apiKey
+      ? { 'x-cg-pro-api-key': config.coingecko.apiKey }
+      : {};
 
-    const res = await axios.get(url, { params, timeout: 15000 });
+    const res = await axios.get(url, { params, headers, timeout: 15000 });
     return res.data;
   } catch (err) {
+    // Si es 429 (rate limit), esperar cooldown extra antes de retornar
+    if (err.response?.status === 429 || err.message?.includes('429')) {
+      const cooldown = config.coingecko.rateLimitCooldownMs || 15000;
+      log.warn(`fetchCoinDetails(${coinId}): 429 rate limit — cooldown ${cooldown}ms`);
+      await sleep(cooldown);
+    }
     log.error(`fetchCoinDetails(${coinId}): ${err.message}`);
     return null;
   }
