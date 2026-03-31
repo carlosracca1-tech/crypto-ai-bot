@@ -18,6 +18,7 @@ const { withRetry }          = require('../utils/retry');
 const { config }             = require('../config');
 const { loadPerformanceLog, fetchTweetMetrics: _fetchMetrics, computeEngagementScore } = require('./performanceEngine');
 const { sendErrorAlert } = require('../alerts/emailAlerts');
+const { safeFetch, logApiUsage } = require('../lib/twitterSafeClient');
 
 const log = createModuleLogger('LiveAdjuster');
 
@@ -54,6 +55,21 @@ function saveState(state) {
 // ─── Get fresh tweet metrics for very recent tweets ──────────────────────────
 
 async function getRecentTweetMetrics(windowHours = VELOCITY_WINDOW_HOURS) {
+  // ── GUARDIA OBLIGATORIA: bloquear READ si readsDisabled ──────────────────
+  if (config.twitter.readsDisabled) {
+    logApiUsage({
+      module: 'LiveAdjuster',
+      function: 'getRecentTweetMetrics',
+      endpoint: '/2/tweets',
+      method: 'GET',
+      type: 'READ',
+      status: 'blocked',
+      ids_count: 0,
+    });
+    log.info('TWITTER_READ_BLOCKED | LiveAdjuster.getRecentTweetMetrics | reason: readsDisabled');
+    return [];
+  }
+
   const bearerToken = process.env.TWITTER_BEARER_TOKEN || config.twitter.bearerToken;
   if (!bearerToken) return [];
 
@@ -69,7 +85,8 @@ async function getRecentTweetMetrics(windowHours = VELOCITY_WINDOW_HOURS) {
 
   try {
     const data = await withRetry(async () => {
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${bearerToken}` } });
+      const res = await safeFetch(url, { headers: { Authorization: `Bearer ${bearerToken}` } },
+        { module: 'LiveAdjuster', function: 'getRecentTweetMetrics', ids_count: ids.length });
       if (!res.ok) throw new Error(`Twitter API ${res.status}`);
       return res.json();
     }, { label: 'liveMetrics', retries: 2, delay: 2000 });
@@ -293,6 +310,12 @@ async function publishFollowUp(content) {
  * Called every 2-3 hours by the scheduler.
  */
 async function runLiveAdjuster() {
+  // ── DOBLE PROTECCIÓN: si readsDisabled, skip entirely ──────────────────────
+  if (config.twitter.readsDisabled) {
+    log.info('TWITTER_READ_BLOCKED | LiveAdjuster.runLiveAdjuster | reason: readsDisabled — skipping entire cycle');
+    return { followups: [], adjustments: [], skipped: 'readsDisabled' };
+  }
+
   log.info('Running live adjuster...');
   const state   = loadState();
   const allLogs = loadPerformanceLog();

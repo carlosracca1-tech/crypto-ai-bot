@@ -40,6 +40,7 @@ const { runPipeline }         = require('../src/pipeline');
 const { runDailyHealthCheck } = require('../src/alerts/healthCheck');
 const { monitored, installGlobalHandlers } = require('../src/alerts/errorMonitor');
 const { config }              = require('../src/config');
+const { enableLeakDetection, generateDailySummary } = require('../src/lib/twitterSafeClient');
 
 // ─── Adaptive systems (non-blocking) ────────────────────────────────────────
 let runPerformanceEngine = async () => {};
@@ -181,11 +182,15 @@ async function executeTweetSlot(label, tweetType) {
 function start() {
   installGlobalHandlers();
 
+  // ── FASE 8: Activar detección de fugas de Twitter API READ ────────────────
+  enableLeakDetection();
+
   log.info('═'.repeat(60));
   log.info('AI CRYPTO BOT v3 — COST-OPTIMIZED (<$10/mes)');
   log.info(`Modelo: ${config.openai.model}`);
   log.info(`Tweets/día: ${TWEET_WINDOWS.length}`);
   log.info(`Twitter reads: ${config.twitter.readsDisabled ? 'DISABLED (Free tier $0)' : 'ENABLED (Basic $100/mes)'}`);
+  log.info(`Twitter API leak detection: ENABLED`);
   log.info(`Dry run: ${config.content.dryRun}`);
   log.info('═'.repeat(60));
 
@@ -235,6 +240,16 @@ function start() {
       cleanup(14, 90);
     } catch (e) { /* optional */ }
   }, { scheduled: true, timezone: 'UTC' });
+
+  // ── FASE 4: Twitter API daily usage summary at 23:55 ART (02:55 UTC) ───
+  cron.schedule('55 2 * * *', () => {
+    log.info('\n📊 Generating Twitter API daily usage summary...');
+    try {
+      const summary = generateDailySummary();
+      log.info(`Twitter API usage: reads_attempted=${summary.total_reads_attempted} blocked=${summary.total_reads_blocked} executed=${summary.total_reads_executed} writes=${summary.total_writes}`);
+    } catch (err) { log.warn(`Daily summary error: ${err.message}`); }
+  }, { scheduled: true, timezone: 'UTC' });
+  log.info('  📊 Twitter usage summary: 23:55 ART');
 
   // ── Performance Engine: 1×/día at 22:00 UTC (19:00 ART) ────────────────
   cron.schedule('0 22 * * *', async () => {

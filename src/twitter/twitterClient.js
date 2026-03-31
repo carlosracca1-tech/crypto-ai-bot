@@ -18,6 +18,7 @@ const { createModuleLogger } = require('../utils/logger');
 const { withRetry, sleep }   = require('../utils/retry');
 const { getValidClient, forceRefresh } = require('../utils/tokenManager');
 const { getCacheSection }    = require('../storage/twitterCache');
+const { updateTweetStatus }  = require('../storage/dataStore');
 
 // Lazy import: chartGenerator usa canvas (módulo nativo) que puede no estar
 // disponible en todos los entornos. Se carga solo cuando se necesita generar un chart.
@@ -364,10 +365,24 @@ async function publishTweetsImmediate(tweets, fusionData = null) {
       tweet.hasChart    = !!mediaId;
       tweet.isQuoteTweet = !!tweet.quoteTweetId;
 
+      // ── Persistir estado "posted" a disco (fix: antes se perdía en memoria) ──
+      try {
+        await updateTweetStatus(tweet.id, {
+          posted:   true,
+          postId:   published.id,
+          postedAt: tweet.postedAt,
+          hasChart: !!mediaId,
+        });
+      } catch (persistErr) {
+        log.warn(`No se pudo persistir estado de tweet ${tweet.id}: ${persistErr.message}`);
+      }
+
       results.push({
         success: true,
         tweetId: published.id,
         type: tweet.type,
+        content: tweet.content,
+        postedAt: tweet.postedAt,
         hasChart: !!mediaId,
         isQuoteTweet: !!tweet.quoteTweetId,
       });

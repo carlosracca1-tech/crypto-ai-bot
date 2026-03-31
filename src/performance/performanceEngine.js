@@ -15,6 +15,7 @@ const path = require('path');
 const { createModuleLogger } = require('../utils/logger');
 const { withRetry }          = require('../utils/retry');
 const { config }             = require('../config');
+const { safeFetch, logApiUsage } = require('../lib/twitterSafeClient');
 
 let twitterDB = null;
 try { twitterDB = require('../storage/twitterDB'); } catch { /* SQLite not available */ }
@@ -155,6 +156,21 @@ function getPublishedTweetIds(lookbackHours = 48) {
 async function fetchTweetMetrics(tweetIds) {
   if (!tweetIds.length) return {};
 
+  // ── GUARDIA OBLIGATORIA: bloquear READ si readsDisabled ──────────────────
+  if (config.twitter.readsDisabled) {
+    logApiUsage({
+      module: 'PerformanceEngine',
+      function: 'fetchTweetMetrics',
+      endpoint: '/2/tweets',
+      method: 'GET',
+      type: 'READ',
+      status: 'blocked',
+      ids_count: tweetIds.length,
+    });
+    log.info(`TWITTER_READ_BLOCKED | PerformanceEngine.fetchTweetMetrics | reason: readsDisabled | ids: ${tweetIds.length}`);
+    return {};
+  }
+
   const bearerToken = config.twitter.bearerToken || process.env.TWITTER_BEARER_TOKEN;
   if (!bearerToken) {
     log.warn('TWITTER_BEARER_TOKEN not set — cannot fetch metrics');
@@ -175,9 +191,9 @@ async function fetchTweetMetrics(tweetIds) {
 
     try {
       const data = await withRetry(async () => {
-        const res = await fetch(url, {
+        const res = await safeFetch(url, {
           headers: { Authorization: `Bearer ${bearerToken}` },
-        });
+        }, { module: 'PerformanceEngine', function: 'fetchTweetMetrics', ids_count: batch.length });
         if (!res.ok) throw new Error(`Twitter API ${res.status}: ${res.statusText}`);
         return res.json();
       }, { label: 'fetchTweetMetrics', retries: 2, delay: 3000 });
@@ -453,6 +469,15 @@ function detectPatterns(entries) {
  * Returns patterns/insights object.
  */
 async function runPerformanceEngine() {
+  // ── DOBLE PROTECCIÓN: si readsDisabled, usar datos locales sin API calls ──
+  if (config.twitter.readsDisabled) {
+    log.info('TWITTER_READ_BLOCKED | PerformanceEngine.runPerformanceEngine | reason: readsDisabled — using local data only');
+    const entries  = loadPerformanceLog();
+    const patterns = detectPatterns(entries);
+    log.info(`Performance analysis (local only): ${entries.length} entries, trend: ${patterns.trend}`);
+    return patterns;
+  }
+
   try {
     const entries  = await updatePerformanceLog();
     const patterns = detectPatterns(entries);
@@ -482,6 +507,7 @@ module.exports = {
   runPerformanceEngine,
   getLatestPatterns,
   updatePerformanceLog,
+  fetchTweetMetrics,
   detectPatterns,
   aggregateByType,
   computeEngagementScore,

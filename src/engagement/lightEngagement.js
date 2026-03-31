@@ -33,6 +33,12 @@ const SEARCH_QUERY = '("AI crypto" OR $TAO OR $FET OR $RNDR OR "decentralized AI
  * @returns {Promise<{quoteTweet: object|null, reply: object|null, searchCost: number}>}
  */
 async function runLightEngagement({ dryRun = false } = {}) {
+  // ── GUARDIA OBLIGATORIA: bloquear si readsDisabled ────────────────────────
+  if (config.twitter.readsDisabled) {
+    log.info('⚡ READS_DISABLED — skipping light engagement (requires search)');
+    return { quoteTweet: null, reply: null, searchCost: 0, skipped: 'readsDisabled' };
+  }
+
   log.info('═'.repeat(50));
   log.info('LIGHT ENGAGEMENT SESSION — 1 search, 1 quote, 1 reply');
   log.info('═'.repeat(50));

@@ -487,10 +487,24 @@ async function runPipeline(opts = {}) {
   await cleanupOldFiles(30);
 
   const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+
+  // ── Construir lista de tweets publicados para que performanceEngine los trackee ──
+  const publishedTweets = publishResults
+    .filter(r => r.success === true && r.tweetId)
+    .map(r => ({
+      tweetId:  r.tweetId,
+      type:     r.type,
+      content:  r.content || '',
+      postedAt: r.postedAt || new Date().toISOString(),
+      tokens:   (r.content || '').match(/\b(BTC|ETH|SOL|TAO|RNDR|FET|AGIX|INJ|NEAR|ARB|OP|AVAX|LINK|DOT)\b/gi) || [],
+      hasChart: r.hasChart || false,
+    }));
+
   const runSummary = {
     id: runId,
     duration: `${elapsed} min`,
     stages: pipelineStages,
+    publishedTweets,
     date: new Date().toISOString().split('T')[0],
     dryRun,
     success: !Object.values(pipelineStages).some(s => s.status === 'failed' && s !== pipelineStages.posting)
