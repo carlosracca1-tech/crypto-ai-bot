@@ -41,6 +41,7 @@ const { runDailyHealthCheck } = require('../src/alerts/healthCheck');
 const { monitored, installGlobalHandlers } = require('../src/alerts/errorMonitor');
 const { config }              = require('../src/config');
 const { enableLeakDetection, generateDailySummary } = require('../src/lib/twitterSafeClient');
+const { forceRefresh, checkTokenHealth } = require('../src/utils/tokenManager');
 
 // ─── Adaptive systems (non-blocking) ────────────────────────────────────────
 let runPerformanceEngine = async () => {};
@@ -179,7 +180,7 @@ async function executeTweetSlot(label, tweetType) {
 
 // ─── Start ──────────────────────────────────────────────────────────────────
 
-function start() {
+async function start() {
   installGlobalHandlers();
 
   // ── FASE 8: Activar detección de fugas de Twitter API READ ────────────────
@@ -192,7 +193,27 @@ function start() {
   log.info(`Twitter reads: ${config.twitter.readsDisabled ? 'DISABLED (Free tier $0)' : 'ENABLED (Basic $100/mes)'}`);
   log.info(`Twitter API leak detection: ENABLED`);
   log.info(`Dry run: ${config.content.dryRun}`);
+
+  // ── Verificar que Railway sync está configurado ───────────────────────
+  const hasRailwaySync = !!process.env.RAILWAY_API_TOKEN;
+  log.info(`Railway token sync: ${hasRailwaySync ? '✅ ENABLED' : '⚠️  DISABLED — tokens no sobreviven redeploys!'}`);
+  if (!hasRailwaySync && process.env.RAILWAY_ENVIRONMENT) {
+    log.error('🚨 ESTÁS EN RAILWAY SIN RAILWAY_API_TOKEN — los tokens se van a perder en cada redeploy!');
+    log.error('🚨 Creá un token en https://railway.com/account/tokens y agregalo como RAILWAY_API_TOKEN');
+  }
+
   log.info('═'.repeat(60));
+
+  // ── Refresh inicial de tokens al arrancar ─────────────────────────────
+  try {
+    log.info('🔑 Refresh inicial de tokens al arrancar...');
+    await forceRefresh();
+    const health = await checkTokenHealth();
+    log.info(`✅ Tokens OK. Access token expira en ${health.hoursUntilExpiry}h`);
+  } catch (err) {
+    log.error(`❌ Refresh inicial FALLÓ: ${err.message}`);
+    log.error('El bot va a intentar refrescar en cada tweet slot, pero puede fallar.');
+  }
 
   // ── Slots dinámicos del día ──────────────────────────────────────────────
   scheduleDaySlots();
@@ -259,6 +280,25 @@ function start() {
     } catch (err) { log.warn(`Performance engine: ${err.message}`); }
   }, { scheduled: true, timezone: 'UTC' });
 
+  // ── PROACTIVE TOKEN REFRESH: cada 90 minutos ─────────────────────────────
+  // Twitter OAuth2 access tokens expiran en 2h. Refresh tokens son ROTATIVOS
+  // (cada refresh invalida el anterior). Si no sincronizamos con Railway,
+  // un redeploy usa tokens viejos → falla → requiere re-auth manual.
+  // Este cron refresca proactivamente para mantener tokens siempre frescos
+  // y sincronizados con Railway env vars.
+  cron.schedule('*/90 * * * *', async () => {
+    log.info('\n🔑 Proactive token refresh...');
+    try {
+      await forceRefresh();
+      const health = await checkTokenHealth();
+      log.info(`✅ Token refresh OK. Expira en ${health.hoursUntilExpiry}h`);
+    } catch (err) {
+      log.error(`❌ Proactive token refresh FAILED: ${err.message}`);
+      // El tokenManager ya envía alerta por email si falla
+    }
+  }, { scheduled: true, timezone: 'UTC' });
+  log.info('  🔑 Token refresh proactivo: cada 90 min');
+
   // ── Prompt Optimizer: semanal, domingos 04:00 UTC ────────────────────────
   cron.schedule('0 4 * * 0', async () => {
     log.info('\n🧠 Prompt Optimizer...');
@@ -284,4 +324,7 @@ function start() {
 process.on('SIGTERM', () => { log.info('SIGTERM. Cerrando...'); clearActiveTimers(); process.exit(0); });
 process.on('SIGINT',  () => { log.info('SIGINT. Cerrando...');  clearActiveTimers(); process.exit(0); });
 
-start();
+start().catch(err => {
+  log.error(`Fatal error en start(): ${err.message}`);
+  process.exit(1);
+});

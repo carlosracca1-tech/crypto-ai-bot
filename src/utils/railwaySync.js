@@ -99,7 +99,9 @@ async function syncTokensToRailway(accessToken, refreshToken) {
   const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
 
   if (!apiToken) {
-    log.debug('RAILWAY_API_TOKEN no configurado — sync deshabilitado');
+    log.warn('⚠️  RAILWAY_API_TOKEN no configurado — tokens NO se sincronizan con Railway!');
+    log.warn('⚠️  Sin esto, un redeploy va a usar tokens viejos y vas a tener que re-autorizar manualmente.');
+    log.warn('⚠️  Configuralo en: https://railway.com/account/tokens');
     return false;
   }
 
